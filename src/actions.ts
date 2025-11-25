@@ -237,6 +237,7 @@ export async function mintMaxLiquidity(
 
     const { amount0: amount0Min, amount1: amount1Min } = position.mintAmountsWithSlippage(SLIPPAGE_TOLERANCE_WIDE);
 
+
     const mintParams = {
         token0: configuredPool.token0.address,
         token1: configuredPool.token1.address,
@@ -257,7 +258,7 @@ export async function mintMaxLiquidity(
         NPM_ABI,
         wallet
     );
-    const tx = await npm.mint(mintParams, { gasLimit: 500_000 });
+    const tx = await npm.mint(mintParams, { gasLimit: 1_000_000 });
     const receipt = await waitWithTimeout(tx, TX_TIMEOUT_MS);
 
     const transferEventSig = ethers.id("Transfer(address,address,uint256)");
