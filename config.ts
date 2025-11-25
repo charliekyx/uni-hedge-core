@@ -9,7 +9,7 @@ const NETWORK = process.env.NETWORK || 'SEPOLIA';
 // --- Constants ---
 export const MAX_RETRIES = 3;
 export const TX_TIMEOUT_MS = 60 * 1000;
-export const SLIPPAGE_TOLERANCE = new Percent(200, 10_000); // 0.5%
+export const SLIPPAGE_TOLERANCE = new Percent(50, 10_000);
 export const MAX_UINT128 = (1n << 128n) - 1n;
 export const POOL_FEE = FeeAmount.MEDIUM; 
 

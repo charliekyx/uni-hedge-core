@@ -140,10 +140,11 @@ export async function rebalancePortfolio(
         wallet
     );
 
-   
     console.log(`[Debug] USDC amount: ${usdcAmount.toSignificant(6)}`);
     console.log(`[Debug] WETH amount: ${wethAmount.toSignificant(18)}`);
-    console.log(`[Debug] wethValueInUsdc amount: ${wethValueInUsdc.toSignificant(6)}`);
+    console.log(
+        `[Debug] wethValueInUsdc amount: ${wethValueInUsdc.toSignificant(6)}`
+    );
 
     // 5 USDC (6 decimals) = 5,000,000
     const THRESHOLD_USDC = 5_000_000n;
@@ -245,11 +246,8 @@ export async function mintMaxLiquidity(
         useFullPrecision: true,
     });
 
-    // This prevents Reverts (good for bot uptime) while stopping total disasters (good for wallet)
-    const SLIPPAGE_TOLERANCE_WIDE = new Percent(300, 10_000); // 3%
-
-    // const { amount0: amount0Min, amount1: amount1Min } =
-    //     position.mintAmountsWithSlippage(SLIPPAGE_TOLERANCE_WIDE);
+    const { amount0: amount0Min, amount1: amount1Min } =
+        position.mintAmountsWithSlippage(SLIPPAGE_TOLERANCE);
 
     const mintParams = {
         token0: configuredPool.token0.address,
@@ -260,14 +258,13 @@ export async function mintMaxLiquidity(
         amount0Desired: position.mintAmounts.amount0.toString(),
         amount1Desired: position.mintAmounts.amount1.toString(),
 
-        // todo: 强制改为 "0" for now!!!!!!! need to fine-tune
-        amount0Min: "0",
-        amount1Min: "0",
+        amount0Min: amount0Min.toString(),
+        amount1Min: amount1Min.toString(),
 
         recipient: wallet.address,
         deadline: Math.floor(Date.now() / 1000) + 120,
     };
-
+    
     console.log(`\n[Mint] Minting new position...`);
     const npm = new ethers.Contract(
         NONFUNGIBLE_POSITION_MANAGER_ADDR,
