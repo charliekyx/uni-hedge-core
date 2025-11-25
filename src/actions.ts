@@ -220,12 +220,10 @@ export async function mintMaxLiquidity(
     // BigInt math: amount * 999 / 1000
     // to ensure there is always a tiny bit more tokens in the wallet than the contract asks for.
     // This prevents "Insufficient Balance" reverts caused by tiny math discrepancies between the SDK and the Smart Contract.
-    // const amount0Safe = (amount0Input * 999n) / 1000n;
-    // const amount1Safe = (amount1Input * 999n) / 1000n;
-
+    
     // Temporary debugging: Use only 50% of balance to rule out "Insufficient Funds" completely
-    const amount0Safe = (amount0Input * 50n) / 100n;
-    const amount1Safe = (amount1Input * 50n) / 100n;
+    const amount0Safe = (amount0Input * 999n) / 1000n;
+    const amount1Safe = (amount1Input * 999n) / 1000n;
 
     const position = Position.fromAmounts({
         pool: configuredPool,
@@ -242,7 +240,7 @@ export async function mintMaxLiquidity(
     const { amount0: amount0Min, amount1: amount1Min } = position.mintAmountsWithSlippage(SLIPPAGE_TOLERANCE_WIDE);
 
 
-    const mintParams = {
+   const mintParams = {
         token0: configuredPool.token0.address,
         token1: configuredPool.token1.address,
         fee: POOL_FEE,
@@ -250,8 +248,11 @@ export async function mintMaxLiquidity(
         tickUpper,
         amount0Desired: position.mintAmounts.amount0.toString(),
         amount1Desired: position.mintAmounts.amount1.toString(),
-        amount0Min: amount0Min.toString(),
-        amount1Min: amount1Min.toString(),
+        
+        // todo: 强制改为 "0" for now!!!!!!! need to fine-tune
+        amount0Min: "0", 
+        amount1Min: "0",
+        
         recipient: wallet.address,
         deadline: Math.floor(Date.now() / 1000) + 120,
     };
