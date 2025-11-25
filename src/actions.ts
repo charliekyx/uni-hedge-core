@@ -38,10 +38,10 @@ export async function approveAll(wallet: ethers.Wallet) {
             const allowance = await withRetry(() =>
                 contract.allowance(wallet.address, spender)
             );
-            if (allowance === 0n) {
-                console.log(
-                    `[Approve] Authorizing ${token.symbol} for ${spender}...`
-                );
+            const threshold = ethers.MaxUint256 / 2n; 
+            
+            if (allowance < threshold) {
+                console.log(`[Approve] Authorizing ${token.symbol} for ${spender}...`);
                 const tx = await contract.approve(spender, ethers.MaxUint256);
                 await waitWithTimeout(tx, TX_TIMEOUT_MS);
                 console.log(`[Approve] Success.`);
