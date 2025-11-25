@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { Pool, Position } from "@uniswap/v3-sdk";
-import { Token, CurrencyAmount } from "@uniswap/sdk-core";
+import { Token, CurrencyAmount, Percent } from "@uniswap/sdk-core";
 import {
     USDC_TOKEN,
     WETH_TOKEN,
@@ -232,8 +232,10 @@ export async function mintMaxLiquidity(
         useFullPrecision: true,
     });
 
-    const { amount0: amount0Min, amount1: amount1Min } =
-        position.mintAmountsWithSlippage(SLIPPAGE_TOLERANCE);
+   // This prevents Reverts (good for bot uptime) while stopping total disasters (good for wallet)
+    const SLIPPAGE_TOLERANCE_WIDE = new Percent(300, 10_000); // 3%
+
+    const { amount0: amount0Min, amount1: amount1Min } = position.mintAmountsWithSlippage(SLIPPAGE_TOLERANCE_WIDE);
 
     const mintParams = {
         token0: configuredPool.token0.address,
