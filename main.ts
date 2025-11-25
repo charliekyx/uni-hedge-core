@@ -11,7 +11,7 @@ import {
     NONFUNGIBLE_POSITION_MANAGER_ADDR,
     V3_FACTORY_ADDR,
 } from "./config";
-import { sleep, withRetry } from "./src/utils";
+import { sleep, withRetry, sendEmailAlert } from "./src/utils"; // Added sendEmailAlert
 import { loadState, saveState } from "./src/state";
 import {
     approveAll,
@@ -19,9 +19,14 @@ import {
     rebalancePortfolio,
     mintMaxLiquidity,
     executeFullRebalance,
+    getBalance
 } from "./src/actions";
 
 dotenv.config();
+
+// Global variable to track price changes between cycles
+let LAST_PRICE: number = 0;
+const PRICE_SHOCK_LIMIT = Number(process.env.PRICE_SHOCK_THRESHOLD_PERCENT) || 10;
 
 // ==========================================
 // Main Logic
@@ -63,15 +68,34 @@ async function runLifeCycle() {
     );
     const currentTick = Number(slot0.tick);
 
-    console.log(`[Debug] Pool Address: ${poolAddr}`);
-    console.log(`[Debug] Tick Spacing: ${configuredPool.tickSpacing}`);
-
-    const price =
+    // Calculate Price
+    const priceStr =
         configuredPool.token0.address === WETH_TOKEN.address
             ? configuredPool.token0Price.toSignificant(6)
             : configuredPool.token1Price.toSignificant(6);
+    
+    const currentPrice = parseFloat(priceStr);
 
-    console.log(`   Price: 1 WETH = ${price} USDC | Tick: ${currentTick}`);
+    console.log(`   Price: 1 WETH = ${currentPrice} USDC | Tick: ${currentTick}`);
+
+    // ============================================================
+    // 1. Optimization: Price Shock Protection (Stop-Loss)
+    // ============================================================
+    if (LAST_PRICE > 0) {
+        const priceChange = Math.abs((currentPrice - LAST_PRICE) / LAST_PRICE) * 100;
+        
+        console.log(`   [Market] Price Change: ${priceChange.toFixed(2)}% (Limit: ${PRICE_SHOCK_LIMIT}%)`);
+
+        if (priceChange > PRICE_SHOCK_LIMIT) {
+            const msg = `EMERGENCY STOP: Price changed by ${priceChange.toFixed(2)}% in 5 minutes! \nOld: ${LAST_PRICE} \nNew: ${currentPrice}`;
+            console.error(msg);
+            await sendEmailAlert("PRICE SHOCK - SHUTTING DOWN", msg);
+            process.exit(1); // Kill the bot to prevent trading in chaos
+        }
+    }
+    // Update global tracker
+    LAST_PRICE = currentPrice;
+
 
     let { tokenId } = loadState();
 
@@ -101,30 +125,43 @@ async function runLifeCycle() {
             console.log(
                 `   [Action] Out of Range! (${tl} < ${currentTick} < ${tu})`
             );
-            console.log(`   >>> Triggering Rebalance Process <<<`);
+            
+            // ============================================================
+            // 2. Optimization: Fee Collection Alert
+            // ============================================================
+            const fees0 = ethers.formatUnits(pos.tokensOwed0, 18);
+            const fees1 = ethers.formatUnits(pos.tokensOwed1, 6);
+            const feeMsg = `Rebalancing triggered! Collected Fees: ${fees0} WETH + ${fees1} USDC`;
+            
+            console.log(`   [Email] Sending Fee Alert...`);
+            await sendEmailAlert("Fees Collected & Rebalancing", feeMsg);
+
+            // Trigger the full atomic rebalance workflow
             await executeFullRebalance(wallet, configuredPool, tokenId);
         } else {
-            // 现在这个 else 可以正常运行了
-            console.log(
-                `   [Status] In Range. (${tl} < ${currentTick} < ${tu})`
-            );
+            console.log(`   [Status] In Range.`);
             
+            // Optional: Check pending fees just for logs
             const fees0 = ethers.formatUnits(pos.tokensOwed0, 18);
             const fees1 = ethers.formatUnits(pos.tokensOwed1, 6);
             console.log(`   Unclaimed Fees: ${fees0} WETH / ${fees1} USDC`);
         }
     } catch (e) {
         console.error(`   [Error] Cycle failed:`, e);
+        await sendEmailAlert("Bot Error", `The bot encountered an error: ${e}`);
     }
 }
 
 async function main() {
+    // Send startup email
+    await sendEmailAlert("Bot Started", "Arbitrum V3 Bot is now running.");
+
     while (true) {
         try {
             await runLifeCycle();
         } catch (e) {
             console.error("[Fatal] Main loop error:", e);
-            // Prevent infinite rapid loops if RPC is down
+            await sendEmailAlert("FATAL CRASH", `Main loop crashed: ${e}`);
             await sleep(10000);
         }
         console.log(`[System] Sleeping 5 min...`);

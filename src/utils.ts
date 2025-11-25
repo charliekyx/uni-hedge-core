@@ -1,4 +1,7 @@
 import { ethers } from "ethers";
+
+import * as nodemailer from "nodemailer";
+
 import { MAX_RETRIES } from "../config";
 
 export function sleep(ms: number) {
@@ -34,4 +37,34 @@ export async function waitWithTimeout(
 
     // 2. Cast the result as the correct type
     return receipt as ethers.ContractTransactionReceipt;
+}
+
+
+const transporter = nodemailer.createTransport({
+    service: process.env.EMAIL_SERVICE || 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+    }
+});
+
+export async function sendEmailAlert(subject: string, text: string) {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        console.log("[Email] No credentials found. Skipping alert.");
+        return;
+    }
+
+    const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: process.env.EMAIL_TO,
+        subject: `[UniBot Alert] ${subject}`,
+        text: text
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        console.log(`[Email] Sent: ${subject}`);
+    } catch (error) {
+        console.error("[Email] Failed to send:", error);
+    }
 }

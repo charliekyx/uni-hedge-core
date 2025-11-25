@@ -7,10 +7,12 @@
         "@uniswap/v3-sdk": "^3.9.0",
         "dotenv": "^16.0.0",
         "ethers": "^6.0.0",
-        "jsbi": "3.2.5"
+        "jsbi": "3.2.5",
+        "nodemailer": "^7.0.10"
     },
     "devDependencies": {
         "@types/node": "^20.0.0",
+        "@types/nodemailer": "^7.0.4",
         "@typescript-eslint/eslint-plugin": "^8.47.0",
         "eslint": "^8.57.1",
         "eslint-config-prettier": "^10.1.8",
