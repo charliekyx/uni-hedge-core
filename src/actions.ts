@@ -248,8 +248,8 @@ export async function mintMaxLiquidity(
     // This prevents Reverts (good for bot uptime) while stopping total disasters (good for wallet)
     const SLIPPAGE_TOLERANCE_WIDE = new Percent(300, 10_000); // 3%
 
-    const { amount0: amount0Min, amount1: amount1Min } =
-        position.mintAmountsWithSlippage(SLIPPAGE_TOLERANCE_WIDE);
+    // const { amount0: amount0Min, amount1: amount1Min } =
+    //     position.mintAmountsWithSlippage(SLIPPAGE_TOLERANCE_WIDE);
 
     const mintParams = {
         token0: configuredPool.token0.address,
