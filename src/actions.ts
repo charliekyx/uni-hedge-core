@@ -215,13 +215,20 @@ export async function mintMaxLiquidity(
         configuredPool.token1.address === WETH_TOKEN.address
             ? balWETH
             : balUSDC;
+    
+    // Calculate 99.9% of balance to avoid rounding errors causing reverts
+    // BigInt math: amount * 999 / 1000
+    // to ensure there is always a tiny bit more tokens in the wallet than the contract asks for. 
+    // This prevents "Insufficient Balance" reverts caused by tiny math discrepancies between the SDK and the Smart Contract.
+    const amount0Safe = (amount0Input * 999n) / 1000n;
+    const amount1Safe = (amount1Input * 999n) / 1000n;
 
     const position = Position.fromAmounts({
         pool: configuredPool,
         tickLower,
         tickUpper,
-        amount0: amount0Input.toString(),
-        amount1: amount1Input.toString(),
+        amount0: amount0Safe.toString(),
+        amount1: amount1Safe.toString(),
         useFullPrecision: true,
     });
 
