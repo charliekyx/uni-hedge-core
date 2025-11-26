@@ -1,4 +1,4 @@
-# UniHedge Bot: Uniswap V3 Delta-Neutral Market Maker
+# uni-hedge-core: Uniswap V3 Delta-Neutral Market Maker
 
 A professional-grade, automated liquidity provision bot for **Uniswap V3 (Arbitrum One)**.
 It features **Delta Neutral Hedging** via Aave V3, **RSI-based trend filtering**, and **Atomic execution** to maximize fee generation while minimizing price exposure and Impermanent Loss (IL).
@@ -68,8 +68,8 @@ It features **Delta Neutral Hedging** via Aave V3, **RSI-based trend filtering**
 
 1. **Clone the repository**
 ```
-git clone [https://github.com/yourusername/unihedge-bot.git](https://github.com/yourusername/unihedge-bot.git)
-cd unihedge-bot
+git clone [https://github.com/yourusername/uni-hedge-core.git](https://github.com/yourusername/uni-hedge-core.git)
+cd uni-hedge-core
 ```
 
 2. **Install Dependencies**
