@@ -26,29 +26,28 @@ It features **Delta Neutral Hedging** via Aave V3, **RSI-based trend filtering**
 
 1. **Market Making**:
 
-  - Provides liquidity in a concentrated range (e.g., current_price ± 2000 ticks).
+    - Provides liquidity in a concentrated range (e.g., current_price ± 2000 ticks).
 
-  - Collects trading fees from Uniswap.
+    - Collects trading fees from Uniswap.
 
 2. **Hedging (Delta Neutral)**:
 
-  - Calculates the precise amount of ETH held in the Uniswap position.
+    - Calculates the precise amount of ETH held in the Uniswap position.
 
-  - Borrows the exact same amount of ETH from Aave V3 (using USDC collateral).
+    - Borrows the exact same amount of ETH from Aave V3 (using USDC collateral).
 
-  - Sells the borrowed ETH for USDC.
+    - Sells the borrowed ETH for USDC.
 
-  - Result: If ETH drops, the LP loses value, but the Aave debt becomes cheaper to repay. Net PnL ≈ Fees.
+    - Result: If ETH drops, the LP loses value, but the Aave debt becomes cheaper to repay. Net PnL ≈ Fees.
 
 3. **Execution**:
+    - Runs on a 5-minute cycle.
 
-- Runs on a 5-minute cycle.
+    - Checks Current Tick vs Position Range.
 
-- Checks Current Tick vs Position Range.
+    - Checks Health Factor on Aave.
 
-- Checks Health Factor on Aave.
-
-- Checks RSI before executing swaps.
+    - Checks RSI before executing swaps.
 
 ## Prerequisites
 
