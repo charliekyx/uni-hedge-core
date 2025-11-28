@@ -1,72 +1,82 @@
 import axios from 'axios';
-import { RSI } from 'technicalindicators';
+import { RSI, ATR } from 'technicalindicators';
 
-
-// RSI (Relative Strength Index) is a momentum indicator used in technical analysis that 
-// measures the magnitude of recent price changes to evaluate overbought or oversold conditions 
-// in the price of a stock or other asset.
-
-// It is displayed as an oscillator (a line graph that moves between two extremes) 
-// and can have a reading from 0 to 100.
-
-// RSI = 100 - 100 / (1 + RS)
-
-// RS =  AVERAGE GAIN / AVERAGE LOSS
-
-// from the above formula, the bigger the gain, the bigger RS is, then making 100 / (1 + RS) smaller, thus the final result RSI will be beigger
-
-// rule of thumb
-// if RSI > 70 The asset may be overvalued and is primed for a trend reversal or corrective pullback in price.
-// if RSI <  30, the asset is undervalued
-
-// Binance API URL for ETH/USDT (High liquidity reference)
+// Binance API for public market data
 const BINANCE_API_URL = 'https://api.binance.com/api/v3/klines';
 
-export interface MarketAnalysis {
-    rsi: number;
-    price: number;
+interface CandleData {
+    high: number[];
+    low: number[];
+    close: number[];
 }
 
-
-/**
- * Fetches the last 14 periods of candle data and calculates RSI.
- * In this case, looking at the period for last 14 hours
- * Uses 1-hour candles by default for trend analysis.
- */
-export async function getEthRsi(interval: string = '1h', period: number = 14): Promise<number> {
+async function fetchCandles(symbol: string, interval: string, limit: number): Promise<CandleData> {
     try {
-        // Fetch 20 candles to ensure we have enough for the period calculation
-        // Symbol: ETHUSDT
         const response = await axios.get(BINANCE_API_URL, {
             params: {
-                symbol: 'ETHUSDT',
+                symbol: symbol,
                 interval: interval,
-                limit: period + 10 
+                limit: limit
             }
         });
 
-        // Binance response format: [ [open_time, open, high, low, close, ...], ... ]
-        // We need the 'close' price (index 4)
-        const closes: number[] = response.data.map((candle: any[]) => parseFloat(candle[4]));
+        // Binance API format: [open_time, open, high, low, close, ...]
+        // Index: 2=High, 3=Low, 4=Close
+        const highs = response.data.map((c: any[]) => parseFloat(c[2]));
+        const lows = response.data.map((c: any[]) => parseFloat(c[3]));
+        const closes = response.data.map((c: any[]) => parseFloat(c[4]));
 
+        return { high: highs, low: lows, close: closes };
+    } catch (error) {
+        throw new Error(`Failed to fetch market data: ${(error as Error).message}`);
+    }
+}
+
+export async function getEthRsi(interval: string = '1h', period: number = 14): Promise<number> {
+    try {
+        const data = await fetchCandles('ETHUSDT', interval, period + 50);
+        
         const inputRSI = {
-            values: closes,
+            values: data.close,
             period: period
         };
 
         const rsiResult = RSI.calculate(inputRSI);
 
-        // Return the most recent RSI value
         if (rsiResult.length > 0) {
-            const latestRsi = rsiResult[rsiResult.length - 1];
-            return latestRsi;
-        } else {
-            throw new Error("Insufficient data to calculate RSI");
+            return rsiResult[rsiResult.length - 1];
         }
+        return 50; 
 
     } catch (error) {
-        console.error(`[Analytics] Failed to fetch RSI:`, error);
-        // Return a neutral RSI (50) on failure so the bot keeps running without filtering
-        return 50;
+        return 50; // Default neutral
+    }
+}
+
+/**
+ * Calculate Average True Range (ATR) to measure volatility in USD.
+ * Returns the average dollar movement per candle (e.g., $30).
+ */
+export async function getEthAtr(interval: string = '1h', period: number = 14): Promise<number> {
+    try {
+        const data = await fetchCandles('ETHUSDT', interval, period + 20);
+        
+        const inputATR = {
+            high: data.high,
+            low: data.low,
+            close: data.close,
+            period: period
+        };
+
+        const atrResult = ATR.calculate(inputATR);
+
+        if (atrResult.length > 0) {
+            return atrResult[atrResult.length - 1];
+        }
+        return 100; // Default safe fallback (100 USD volatility)
+
+    } catch (error) {
+        // console.error("ATR calculation failed, using default.");
+        return 100; 
     }
 }

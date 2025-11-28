@@ -4,7 +4,7 @@ import * as path from "path";
 const STATE_FILE = path.join(process.cwd(), "bot_state.json");
 
 export interface BotState {
-    tokenId: string;
+    tokenId: string; // tokenid from my last postion mint
     lastCheck: number;
 }
 

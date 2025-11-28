@@ -17,10 +17,11 @@ import {
     V3_FACTORY_ADDR,
     RSI_OVERBOUGHT,
     RSI_OVERSOLD,
+    AAVE_POOL_ADDR,
 } from "../config";
 import { withRetry, waitWithTimeout } from "./utils";
 import { saveState } from "./state";
-import { getEthRsi } from "./analytics";
+import { getEthAtr, getEthRsi } from "./analytics";
 
 // --- Wallet Utilities ---
 export async function getBalance(
@@ -33,7 +34,11 @@ export async function getBalance(
 
 export async function approveAll(wallet: ethers.Wallet) {
     const tokens = [USDC_TOKEN, WETH_TOKEN];
-    const spenders = [NONFUNGIBLE_POSITION_MANAGER_ADDR, SWAP_ROUTER_ADDR];
+    const spenders = [
+        NONFUNGIBLE_POSITION_MANAGER_ADDR,
+        SWAP_ROUTER_ADDR,
+        AAVE_POOL_ADDR,
+    ];
 
     for (const token of tokens) {
         const contract = new ethers.Contract(token.address, ERC20_ABI, wallet);
@@ -113,10 +118,6 @@ export async function rebalancePortfolio(
     wallet: ethers.Wallet,
     configuredPool: Pool
 ) {
-    console.log(`[Debug] Checking balances for wallet: ${wallet.address}`);
-    console.log(`[Debug] USDC Contract: ${USDC_TOKEN.address}`);
-    console.log(`[Debug] WETH Contract: ${WETH_TOKEN.address}`);
-
     console.log(`\n[Rebalance] Calculating Optimal Swap with RSI Filter...`);
 
     // 1. Get RSI Data
@@ -328,28 +329,17 @@ export async function executeFullRebalance(
     configuredPool: Pool,
     oldTokenId: string
 ) {
-    const npm = new ethers.Contract(
-        NONFUNGIBLE_POSITION_MANAGER_ADDR,
-        NPM_ABI,
-        wallet
-    );
-
-    // 1. Burn old position if exists
+    // 1. Exit Old
     if (oldTokenId !== "0") {
         await atomicExitPosition(wallet, oldTokenId);
     }
 
-    // 2. Rebalance (Swap)
+    // 2. Swap
     await rebalancePortfolio(wallet, configuredPool);
 
-    // ============================================================
-    // Refresh Pool State After Swap
-    // ============================================================
-    console.log(
-        "   [System] Refreshing market price and liquidity after swap..."
-    );
+    console.log("   [System] Refreshing market data...");
 
-    // Explicitly passing V3_FACTORY_ADDR is required for Sepolia
+    // 3. Refresh Data
     const poolAddr = Pool.getAddress(
         USDC_TOKEN,
         WETH_TOKEN,
@@ -359,7 +349,6 @@ export async function executeFullRebalance(
     );
     const poolContract = new ethers.Contract(poolAddr, POOL_ABI, wallet);
 
-    // Fetch fresh slot0 AND liquidity
     const [newSlot0, newLiquidity] = await Promise.all([
         poolContract.slot0(),
         poolContract.liquidity(),
@@ -367,7 +356,6 @@ export async function executeFullRebalance(
 
     const newCurrentTick = Number(newSlot0.tick);
 
-    // Create a FRESH pool instance for accurate Mint math
     const freshPool = new Pool(
         USDC_TOKEN,
         WETH_TOKEN,
@@ -377,13 +365,46 @@ export async function executeFullRebalance(
         newCurrentTick
     );
 
+    console.log(`   [Update] Tick: ${newCurrentTick}`);
+
+    // ============================================================
+    // DYNAMIC RANGE CALCULATION (ATR BASED)
+    // ============================================================
+
+    // A. Get ATR (Volatility)
+    const atr = await getEthAtr("1h"); // e.g., 45 USD
+
+    // B. Convert ATR to Ticks
+    // Rule of thumb: 1% Price Move ~= 100 Ticks
+    // Price is approx `configuredPool.token0Price` (if WETH is T0) or inverse
+    const priceStr =
+        freshPool.token0.address === WETH_TOKEN.address
+            ? freshPool.token0Price.toSignificant(6)
+            : freshPool.token1Price.toSignificant(6);
+    const currentPrice = parseFloat(priceStr);
+
+    // Volatility Percentage = ATR / Price
+    // Example: 50 / 3000 = 1.6%
+    const volPercent = (atr / currentPrice) * 100;
+
+    // Dynamic Width = Volatility% * 100 Ticks * SafetyFactor
+    // SafetyFactor 4 means we cover 4x the hourly volatility
+    const SAFETY_FACTOR = 4;
+    let dynamicWidth = Math.floor(volPercent * 100 * SAFETY_FACTOR);
+
     console.log(
-        `   [Update] Price moved from ${configuredPool.tickCurrent} to ${newCurrentTick}`
+        `   [Strategy] ATR: $${atr.toFixed(2)} | Vol: ${volPercent.toFixed(2)}% | Calc Width: ${dynamicWidth}`
     );
 
-    // 3. Calculate new Tick Range
+    // C. Clamp Limits (Don't go too narrow or too wide)
+    // Min: 500 ticks (Tight)
+    // Max: 4000 ticks (Wide)
+    const WIDTH = Math.max(500, Math.min(dynamicWidth, 4000));
+
+    console.log(`   [Strategy] Final Range Width: ${WIDTH}`);
+
+    // D. Calculate Range
     const tickSpace = freshPool.tickSpacing;
-    const WIDTH = 2000;
     const MIN_TICK = -887272;
     const MAX_TICK = 887272;
 
@@ -406,14 +427,57 @@ export async function executeFullRebalance(
 
     console.log(`   New Range: [${tickLower}, ${tickUpper}]`);
 
-    // 4. Mint (Using the FRESH pool instance)
     const newTokenId = await mintMaxLiquidity(
         wallet,
         freshPool,
         tickLower,
         tickUpper
     );
-
-    // 5. Save State
     saveState(newTokenId);
+}
+
+export async function closeLpPosition(wallet: ethers.Wallet, tokenId: string) {
+    if (tokenId === "0") return;
+
+    console.log(
+        `[Action] Closing LP Position ${tokenId} to recover collateral...`
+    );
+    const npm = new ethers.Contract(
+        NONFUNGIBLE_POSITION_MANAGER_ADDR,
+        NPM_ABI,
+        wallet
+    );
+
+    // 1. Get Liquidity Amount
+    const pos = await npm.positions(tokenId);
+    const liquidity = pos.liquidity;
+
+    if (liquidity === 0n) {
+        console.log(`   [Action] Position already empty.`);
+        return;
+    }
+
+    // 2. Decrease Liquidity (Remove 100%)
+    const params = {
+        tokenId: tokenId,
+        liquidity: liquidity,
+        amount0Min: 0, // In panic mode, we accept slippage
+        amount1Min: 0,
+        deadline: Math.floor(Date.now() / 1000) + 120,
+    };
+
+    const tx = await npm.decreaseLiquidity(params);
+    await waitWithTimeout(tx, 30000); // 30s timeout
+
+    // 3. Collect Tokens (Important! decreaseLiquidity just burns LP, collect gets tokens)
+    const collectParams = {
+        tokenId: tokenId,
+        recipient: wallet.address,
+        amount0Max: ethers.MaxUint256,
+        amount1Max: ethers.MaxUint256,
+    };
+    const txCollect = await npm.collect(collectParams);
+    await waitWithTimeout(txCollect, 30000);
+
+    console.log(`   [Action] LP Closed. Tokens recovered to wallet.`);
 }

@@ -10,4 +10,4 @@ COPY . .
 RUN npm run build
 
 # Start
-CMD ["node", "dist/main.js"]
+CMD ["node", "dist/index.js"]
