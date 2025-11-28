@@ -93,7 +93,7 @@ async function onNewBlock(blockNumber: number) {
     const { tokenId } = await loadState();
 
     // If no active strategy, nothing to check
-    if (!tokenId || tokenId === "0") return;
+    if (!tokenId) return;
 
     // ============================================================
     // CRITICAL PATH: SAFETY CHECK (Every Block, No Throttle)
