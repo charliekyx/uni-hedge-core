@@ -45,9 +45,17 @@ async function initialize() {
     });
 
     provider = robustProvider.getProvider();
-    const baseWallet = new ethers.Wallet(process.env.PRIVATE_KEY!, provider);
-    wallet = new NonceManager(baseWallet) as any; // Cast as any to avoid type complaints if strictly typed
+  const baseWallet = new ethers.Wallet(process.env.PRIVATE_KEY!, provider);
+    
+    // 1. 创建 NonceManager
+    const managedWallet = new NonceManager(baseWallet);
+    
+    // 2. [关键修复] 手动把 address 属性贴上去
+    // 这样 src/hedge.ts 里的 this.wallet.address 就不会报错了
+    (managedWallet as any).address = baseWallet.address;
 
+    // 3. 赋值给全局变量
+    wallet = managedWallet as any;
     console.log(`[System] Wallet initialized with NonceManager: ${await wallet.getAddress()}`);
     
     const poolAddr = Pool.getAddress(
