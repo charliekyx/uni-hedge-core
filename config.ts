@@ -1,6 +1,9 @@
+import * as dotenv from "dotenv";
+
+import { ethers } from "ethers";
+
 import { Token, Percent } from "@uniswap/sdk-core";
 import { FeeAmount } from "@uniswap/v3-sdk";
-import * as dotenv from "dotenv";
 
 dotenv.config();
 
@@ -9,15 +12,33 @@ const NETWORK = process.env.NETWORK || "SEPOLIA";
 // --- Constants ---
 export const MAX_RETRIES = 3;
 export const TX_TIMEOUT_MS = 60 * 1000;
+
 export const SLIPPAGE_TOLERANCE = new Percent(50, 10_000);
+
 export const MAX_UINT128 = (1n << 128n) - 1n;
+
 export const POOL_FEE = FeeAmount.MEDIUM;
+
+ export const DELTA_NEUTRAL_THRESHOLD = ethers.parseEther("0.02"); // 0.02 ETH to avoid gas waste from uncessary hedgeing
 
 // --- RSI Thresholds ---
 // If RSI > 70, market is Overbought (Don't Buy ETH)
 // If RSI < 30, market is Oversold (Don't Sell ETH)
-export const RSI_OVERBOUGHT = 70;
-export const RSI_OVERSOLD = 30;
+export const RSI_OVERBOUGHT = 75;
+export const RSI_OVERSOLD = 25;
+
+// -- ATR --
+
+// a Risk Management parameter. It determines how "conservative" or "aggressive" your bot is.
+// ATR (Average True Range): This tells you the average volatility over the past few hours.
+// The Problem: The market doesn't always follow the "average." A sudden crash or pump can be 2x or 3x the average volatility.
+export const ATR_SAFETY_FACTOR = 4;
+
+ // 30 USDC (6 decimals) = 30,000,000
+ // for fund around 2000 - 3000 this threshold is good, prevent from rebalancing too often
+export const REBALANCE_THRESHOLD_USDC = 30_000_000n;
+// 0.01 WETH (18 decimals) = 10,000,000,000,000,000
+export const REBALANCE_THRESHOLD_WETH = 10_000_000_000_000_000n;
 
 // --- Aave Configuration ---
 export const AAVE_TARGET_HEALTH_FACTOR = 2.0; // Target safety buffer

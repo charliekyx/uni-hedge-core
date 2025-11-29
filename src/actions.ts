@@ -1,6 +1,8 @@
 import { ethers } from "ethers";
+
 import { Pool, Position } from "@uniswap/v3-sdk";
 import { Token, CurrencyAmount, Percent } from "@uniswap/sdk-core";
+
 import {
     USDC_TOKEN,
     WETH_TOKEN,
@@ -18,7 +20,11 @@ import {
     RSI_OVERBOUGHT,
     RSI_OVERSOLD,
     AAVE_POOL_ADDR,
+    REBALANCE_THRESHOLD_USDC,
+    REBALANCE_THRESHOLD_WETH,
+    ATR_SAFETY_FACTOR,
 } from "../config";
+
 import { withRetry, waitWithTimeout } from "./utils";
 import { saveState } from "./state";
 import { getEthAtr, getEthRsi } from "./analytics";
@@ -120,10 +126,6 @@ export async function rebalancePortfolio(
 ) {
     console.log(`\n[Rebalance] Calculating Optimal Swap with RSI Filter...`);
 
-    // 1. Get RSI Data
-    const currentRsi = await getEthRsi("1h");
-    console.log(`   [Market] Current ETH 1h RSI: ${currentRsi.toFixed(2)}`);
-
     const balUSDC = await getBalance(USDC_TOKEN, wallet);
     const balWETH = await getBalance(WETH_TOKEN, wallet);
 
@@ -148,31 +150,12 @@ export async function rebalancePortfolio(
         wallet
     );
 
-    console.log(`[Debug] USDC amount: ${usdcAmount.toSignificant(6)}`);
-    console.log(`[Debug] WETH amount: ${wethAmount.toSignificant(18)}`);
-    console.log(
-        `[Debug] wethValueInUsdc amount: ${wethValueInUsdc.toSignificant(6)}`
-    );
-
-    // 5 USDC (6 decimals) = 5,000,000
-    const THRESHOLD_USDC = 5_000_000n;
-    // 0.002 WETH (18 decimals) = 2,000,000,000,000,000
-    const THRESHOLD_WETH = 2_000_000_000_000_000n;
-
     if (usdcAmount.greaterThan(wethValueInUsdc)) {
-        // RSI Check: If RSI > 70 (Overbought), Buying ETH is risky (buying the top).
-        if (currentRsi > RSI_OVERBOUGHT) {
-            console.log(
-                `   [RSI ALERT] Market is Overbought (RSI > ${RSI_OVERBOUGHT}). Skipping BUY ETH to prevent buying the top.`
-            );
-            return;
-        }
-
         // Sell USDC
         const diff = usdcAmount.subtract(wethValueInUsdc);
         const amountToSell = diff.divide(2);
 
-        if (BigInt(amountToSell.quotient.toString()) < THRESHOLD_USDC) {
+        if (BigInt(amountToSell.quotient.toString()) < REBALANCE_THRESHOLD_USDC) {
             console.log("   Balance is good enough. Skipping swap.");
             return;
         }
@@ -192,13 +175,6 @@ export async function rebalancePortfolio(
         });
         await waitWithTimeout(tx, TX_TIMEOUT_MS);
     } else {
-        // RSI Check: If RSI < 30 (Oversold), Selling ETH is risky (selling the bottom).
-        if (currentRsi < RSI_OVERSOLD) {
-            console.log(
-                `   [RSI ALERT] Market is Oversold (RSI < ${RSI_OVERSOLD}). Skipping SELL ETH to prevent panic selling.`
-            );
-            return;
-        }
         // Sell WETH
         const diffValueInUsdc = wethValueInUsdc.subtract(usdcAmount);
         const amountToSellValue = diffValueInUsdc.divide(2);
@@ -210,7 +186,7 @@ export async function rebalancePortfolio(
 
         const amountToSell = priceUsdcToWeth.quote(amountToSellValue);
 
-        if (BigInt(amountToSell.quotient.toString()) < THRESHOLD_WETH) {
+        if (BigInt(amountToSell.quotient.toString()) < REBALANCE_THRESHOLD_WETH) {
             console.log("   Balance is good enough. Skipping swap.");
             return;
         }
@@ -329,17 +305,19 @@ export async function executeFullRebalance(
     configuredPool: Pool,
     oldTokenId: string
 ) {
-    // 1. Exit Old
+    console.log(`[Rebalance] Starting full rebalance sequence...`);
+
+    // 1. Exit Old Position
     if (oldTokenId !== "0") {
         await atomicExitPosition(wallet, oldTokenId);
     }
 
-    // 2. Swap
+    // 2. Swap to align portfolio ratio
     await rebalancePortfolio(wallet, configuredPool);
 
     console.log("   [System] Refreshing market data...");
 
-    // 3. Refresh Data
+    // 3. Refresh Data (Fetch latest Price/Liquidity)
     const poolAddr = Pool.getAddress(
         USDC_TOKEN,
         WETH_TOKEN,
@@ -368,7 +346,7 @@ export async function executeFullRebalance(
     console.log(`   [Update] Tick: ${newCurrentTick}`);
 
     // ============================================================
-    // DYNAMIC RANGE CALCULATION (ATR BASED)
+    // DYNAMIC RANGE CALCULATION (ATR + RSI SKEW)
     // ============================================================
 
     // A. Get ATR (Volatility)
@@ -389,8 +367,7 @@ export async function executeFullRebalance(
 
     // Dynamic Width = Volatility% * 100 Ticks * SafetyFactor
     // SafetyFactor 4 means we cover 4x the hourly volatility
-    const SAFETY_FACTOR = 4;
-    let dynamicWidth = Math.floor(volPercent * 100 * SAFETY_FACTOR);
+    let dynamicWidth = Math.floor(volPercent * 100 * ATR_SAFETY_FACTOR);
 
     console.log(
         `   [Strategy] ATR: $${atr.toFixed(2)} | Vol: ${volPercent.toFixed(2)}% | Calc Width: ${dynamicWidth}`
@@ -399,34 +376,77 @@ export async function executeFullRebalance(
     // C. Clamp Limits (Don't go too narrow or too wide)
     // Min: 500 ticks (Tight)
     // Max: 4000 ticks (Wide)
+    // WIDTH here represents the "Radius" (half of the total range)
     const WIDTH = Math.max(500, Math.min(dynamicWidth, 4000));
 
-    console.log(`   [Strategy] Final Range Width: ${WIDTH}`);
+    console.log(`   [Strategy] Base Radius Width: ${WIDTH}`);
 
-    // D. Calculate Range
+    // D. Calculate Range with RSI SKEW
     const tickSpace = freshPool.tickSpacing;
     const MIN_TICK = -887272;
     const MAX_TICK = 887272;
 
-    let tickLower =
-        Math.floor((newCurrentTick - WIDTH) / tickSpace) * tickSpace;
-    let tickUpper =
-        Math.floor((newCurrentTick + WIDTH) / tickSpace) * tickSpace;
+    // 1. Get RSI
+    const rsi = await getEthRsi("1h");
+    console.log(`   [Strategy] RSI Check: ${rsi.toFixed(2)}`);
 
+    // 2. Determine Skew Factor
+    // 0.5 = Symmetric (Default)
+    // > 0.5 = More space above (Bullish)
+    // < 0.5 = More space below (Bearish)
+    let skew = 0.5;
+
+    if (rsi > 75) {
+        // Overbought -> Price likely to drop.
+        // Skew range DOWN: Less space above, more space below to catch the dip.
+        skew = 0.3;
+        console.log(`   [Strategy] RSI High -> Skewing Range DOWN (Bearish Setup)`);
+    } else if (rsi < 25) {
+        // Oversold -> Price likely to bounce.
+        // Skew range UP: More space above to catch the rally, less space below.
+        skew = 0.7;
+        console.log(`   [Strategy] RSI Low -> Skewing Range UP (Bullish Setup)`);
+    } else {
+        console.log(`   [Strategy] RSI Neutral -> Symmetric Range`);
+    }
+
+    // 3. Apply Skew
+    // Total span is roughly WIDTH * 2 (since WIDTH was calculated as a radius)
+    const totalSpan = WIDTH * 2;
+
+    const upperTickDiff = Math.floor(totalSpan * skew);
+    const lowerTickDiff = Math.floor(totalSpan * (1 - skew));
+
+    let tickLower =
+        Math.floor((newCurrentTick - lowerTickDiff) / tickSpace) * tickSpace;
+    let tickUpper =
+        Math.floor((newCurrentTick + upperTickDiff) / tickSpace) * tickSpace;
+
+    // E. Boundary Checks and Sanitization
     if (tickLower < MIN_TICK)
         tickLower = Math.ceil(MIN_TICK / tickSpace) * tickSpace;
     if (tickUpper > MAX_TICK)
         tickUpper = Math.floor(MAX_TICK / tickSpace) * tickSpace;
 
-    if (tickLower === tickUpper) tickUpper += tickSpace;
+    // Ensure tickUpper > tickLower
+    if (tickLower >= tickUpper) {
+        // Force minimum spacing if calculation collapsed the range
+        tickUpper = tickLower + tickSpace;
+    }
+
+    // Clamp again if upper exceeded max due to adjustment
     if (tickUpper > MAX_TICK) {
         tickUpper = Math.floor(MAX_TICK / tickSpace) * tickSpace;
         tickLower = tickUpper - tickSpace;
     }
-    if (tickLower > tickUpper) [tickLower, tickUpper] = [tickUpper, tickLower];
 
-    console.log(`   New Range: [${tickLower}, ${tickUpper}]`);
+    console.log(
+        `   New Range: [${tickLower}, ${tickUpper}] (Skew: ${skew}, Span: ${
+            tickUpper - tickLower
+        })`
+    );
 
+    // 4. Mint New Position
     const newTokenId = await mintMaxLiquidity(
         wallet,
         freshPool,
@@ -434,50 +454,4 @@ export async function executeFullRebalance(
         tickUpper
     );
     saveState(newTokenId);
-}
-
-export async function closeLpPosition(wallet: ethers.Wallet, tokenId: string) {
-    if (tokenId === "0") return;
-
-    console.log(
-        `[Action] Closing LP Position ${tokenId} to recover collateral...`
-    );
-    const npm = new ethers.Contract(
-        NONFUNGIBLE_POSITION_MANAGER_ADDR,
-        NPM_ABI,
-        wallet
-    );
-
-    // 1. Get Liquidity Amount
-    const pos = await npm.positions(tokenId);
-    const liquidity = pos.liquidity;
-
-    if (liquidity === 0n) {
-        console.log(`   [Action] Position already empty.`);
-        return;
-    }
-
-    // 2. Decrease Liquidity (Remove 100%)
-    const params = {
-        tokenId: tokenId,
-        liquidity: liquidity,
-        amount0Min: 0, // In panic mode, we accept slippage
-        amount1Min: 0,
-        deadline: Math.floor(Date.now() / 1000) + 120,
-    };
-
-    const tx = await npm.decreaseLiquidity(params);
-    await waitWithTimeout(tx, 30000); // 30s timeout
-
-    // 3. Collect Tokens (Important! decreaseLiquidity just burns LP, collect gets tokens)
-    const collectParams = {
-        tokenId: tokenId,
-        recipient: wallet.address,
-        amount0Max: MAX_UINT128,
-        amount1Max: MAX_UINT128,
-    };
-    const txCollect = await npm.collect(collectParams);
-    await waitWithTimeout(txCollect, 30000);
-
-    console.log(`   [Action] LP Closed. Tokens recovered to wallet.`);
 }

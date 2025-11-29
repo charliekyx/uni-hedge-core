@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+
 import {
     AAVE_POOL_ADDR,
     AAVE_POOL_ABI,
@@ -12,9 +13,12 @@ import {
     TX_TIMEOUT_MS,
     AAVE_TARGET_HEALTH_FACTOR,
     AAVE_MIN_HEALTH_FACTOR,
+    DELTA_NEUTRAL_THRESHOLD,
 } from "../config";
+
 import { withRetry, waitWithTimeout, sendEmailAlert } from "./utils";
-import { closeLpPosition } from "./actions";
+import { saveState } from "./state";
+import { atomicExitPosition } from "./actions";
 
 const RATE_MODE_VARIABLE = 2; // Aave Variable Rate
 
@@ -61,7 +65,7 @@ export class AaveManager {
         );
     }
 
-    // --- Safety Checks (New) ---
+    // --- Safety Checks ---
 
     /**
      * Lightweight check to be called on every block.
@@ -84,47 +88,15 @@ export class AaveManager {
         } catch (e) {
             console.error("[Aave] Health check failed:", e);
             // Assume safe on RPC error to prevent premature panic, but log it.
-            // Alternatively, return false if you want fail-safe behavior.
             return true;
         }
     }
 
-    // --- Actions ---
-
-    async supplyUsdc(amount: bigint) {
-        console.log(
-            `   [Aave] Supplying ${ethers.formatUnits(amount, 6)} USDC...`
-        );
-
-        const usdcContract = new ethers.Contract(
-            USDC_TOKEN.address,
-            ERC20_ABI,
-            this.wallet
-        );
-        const allowance = await usdcContract.allowance(
-            this.wallet.address,
-            AAVE_POOL_ADDR
-        );
-
-        if (allowance < amount) {
-            console.log(`   [Aave] Approving USDC...`);
-            const txAppr = await usdcContract.approve(
-                AAVE_POOL_ADDR,
-                ethers.MaxUint256
-            );
-            await waitWithTimeout(txAppr, TX_TIMEOUT_MS);
-        }
-
-        const tx = await this.poolContract.supply(
-            USDC_TOKEN.address,
-            amount,
-            this.wallet.address,
-            0
-        );
-        await waitWithTimeout(tx, TX_TIMEOUT_MS);
-        console.log(`   [Aave] Supply Confirmed.`);
-    }
-
+    /**
+     * borrow more weth from aave ans swap them to USDC for hedging
+     * @param amountEth 
+     * @returns 
+     */
     async increaseShort(amountEth: bigint) {
         const hf = await this.getHealthFactor();
         if (hf < AAVE_TARGET_HEALTH_FACTOR) {
@@ -158,23 +130,6 @@ export class AaveManager {
 
         console.log(`   [Hedge] Selling borrowed ETH for USDC...`);
 
-        const wethContract = new ethers.Contract(
-            WETH_TOKEN.address,
-            ERC20_ABI,
-            this.wallet
-        );
-        const allowance = await wethContract.allowance(
-            this.wallet.address,
-            SWAP_ROUTER_ADDR
-        );
-        if (allowance < amountEth) {
-            const txAppr = await wethContract.approve(
-                SWAP_ROUTER_ADDR,
-                ethers.MaxUint256
-            );
-            await waitWithTimeout(txAppr, TX_TIMEOUT_MS);
-        }
-
         const txSwap = await this.swapRouter.exactInputSingle({
             tokenIn: WETH_TOKEN.address,
             tokenOut: USDC_TOKEN.address,
@@ -189,7 +144,12 @@ export class AaveManager {
         console.log(`   [Hedge] Short Position Increased.`);
     }
 
-    async decreaseShort(amountEth: bigint) {
+    /**
+     * pay back aave with weth, if not enough in the wallet, try swap with USDC first
+     * @param amountEth 
+     * @returns 
+     */
+    async decreaseShort(amountEth: bigint, force:boolean = false) {
         console.log(
             `   [Hedge] CLOSE SHORT: Repaying ${ethers.formatUnits(amountEth, 18)} ETH...`
         );
@@ -227,14 +187,13 @@ export class AaveManager {
                 return; // Stop if swap fails
             }
         }
-        // -----------------------------
 
         // Repay Logic
 
         try {
             const tx = await this.poolContract.repay(
                 WETH_TOKEN.address,
-                amountEth, // Or use ethers.MaxUint256 to repay all if close to balance
+                force === true? ethers.MaxUint256 : amountEth, // if force === true, use ethers.MaxUint256 to repay all if close to balance, for panic exit to have a clean repayment
                 RATE_MODE_VARIABLE,
                 this.wallet.address
             );
@@ -242,42 +201,47 @@ export class AaveManager {
             console.log(`   [Hedge] Repay Confirmed.`);
         } catch (e) {
             console.error(`   [Aave] Repay Failed:`, e);
+            sendEmailAlert("[Aave] Repay Failed", "Not enough weth and USDC in the wallet to repay Aave")
         }
     }
 
-    /**
+   /**
      * PANIC EXIT: Clear all debt and positions
-     * IMPROVED: Exits LP first to ensure we have collateral to repay
      */
     async panicExitAll(lpTokenId: string) {
         console.log(`\n[CRITICAL EXIT] Initiating panic cleanup!`);
 
-        // 1. Alert
-        const hf = await this.getHealthFactor();
-        await sendEmailAlert(
-            "CRITICAL: Panic Exit",
-            `HF ${hf}. Exiting all positions.`
-        );
+        // 1. Alert (Fail-safe)
+        try {
+            const hf = await this.getHealthFactor();
+            await sendEmailAlert("CRITICAL: Panic Exit", `HF ${hf}. Exiting all positions.`);
+        } catch (e) {
+            console.error("   [Panic] Failed to send initial alert:", e);
+        }
 
         // 2. BREAK LP FIRST (Get the WETH back!)
         try {
             if (lpTokenId && lpTokenId !== "0") {
-                await closeLpPosition(this.wallet, lpTokenId);
+               await atomicExitPosition(this.wallet, lpTokenId);
+
+                await saveState("0"); // the program will restart itself, its important tp reset position token
+                console.log("   [Panic] LP Closed & State Reset.");
             }
         } catch (e) {
             console.error("   [Panic] Failed to close LP:", e);
-            // Continue anyway, try to repay with whatever we have
+            await sendEmailAlert("[Panic] Failed to close LP", String(e));
         }
 
         // 3. Repay Debt
-        const currentDebt = await this.getCurrentEthDebt();
-        if (currentDebt > 0n) {
-            console.log(
-                `   [Aave] Repaying debt: ${ethers.formatEther(currentDebt)} ETH`
-            );
-            // This will now use the WETH we just got from closing the LP
-            // plus any WETH we got from the auto-swap inside decreaseShort (if still needed)
-            await this.decreaseShort(currentDebt);
+        try {
+            const currentDebt = await this.getCurrentEthDebt();
+            if (currentDebt > 0n) {
+                console.log(`   [Aave] Found debt: ${ethers.formatEther(currentDebt)} ETH`);
+                await this.decreaseShort(currentDebt, true); // force to use eveything in the wallet to repay aave
+            }
+        } catch (e) {
+            console.error("   [Panic] Failed to repay Aave debt:", e);
+            await sendEmailAlert("[Panic] Failed to repay Aave debt", String(e));
         }
 
         console.log(`[EXIT] Strategy Stopped.`);
@@ -285,7 +249,7 @@ export class AaveManager {
     }
 
     async adjustHedge(lpEthAmount: bigint, lpTokenId: string) {
-        // Redundant safety check (optional but recommended)
+        // double check safety level 
         const hf = await this.getHealthFactor();
         if (hf < AAVE_MIN_HEALTH_FACTOR) {
             await this.panicExitAll(lpTokenId);
@@ -297,18 +261,15 @@ export class AaveManager {
         const currentDebt = await this.getCurrentEthDebt();
         const diff = lpEthAmount - currentDebt;
 
-        // Threshold: 0.02 ETH to avoid gas waste
-        const THRESHOLD = ethers.parseEther("0.02");
-
         console.log(
             `   [Status] LP Long: ${ethers.formatEther(lpEthAmount)} ETH | Aave Short: ${ethers.formatEther(currentDebt)} ETH`
         );
         console.log(`   [Status] Net Delta: ${ethers.formatEther(diff)} ETH`);
 
-        if (diff > THRESHOLD) {
+        if (diff > DELTA_NEUTRAL_THRESHOLD) {
             // Long > Short -> Increase Hedge
             await this.increaseShort(diff);
-        } else if (diff < -THRESHOLD) {
+        } else if (diff < -DELTA_NEUTRAL_THRESHOLD) {
             // Short > Long -> Decrease Hedge
             const repayAmt = -diff;
             await this.decreaseShort(repayAmt);

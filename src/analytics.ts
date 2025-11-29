@@ -1,4 +1,5 @@
 import axios from 'axios';
+
 import { RSI, ATR } from 'technicalindicators';
 
 // Binance API for public market data

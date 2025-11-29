@@ -11,6 +11,8 @@ import {
     NPM_ABI,
     NONFUNGIBLE_POSITION_MANAGER_ADDR,
     V3_FACTORY_ADDR,
+    RSI_OVERBOUGHT,
+    RSI_OVERSOLD,
 } from "./config";
 
 import { loadState } from "./src/state"; // Now uses Redis
@@ -18,6 +20,7 @@ import { approveAll, executeFullRebalance } from "./src/actions";
 import { AaveManager } from "./src/hedge";
 import { RobustProvider } from "./src/connection";
 import { sendEmailAlert } from "./src/utils";
+import { getEthRsi } from "./src/analytics";
 
 dotenv.config();
 
@@ -190,7 +193,7 @@ async function onNewBlock(blockNumber: number) {
     const tu = Number(pos.tickUpper);
 
     if (currentTick < tl || currentTick > tu) {
-        console.log(`[Strategy] Out of Range. Rebalancing...`);
+        console.log(`[Strategy] Out of Range. Rebalancing...`);    
         await executeFullRebalance(wallet, configuredPool, tokenId);
         lastHedgeTime = Date.now(); // Reset timer
         return;
