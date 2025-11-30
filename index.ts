@@ -53,16 +53,16 @@ async function initialize() {
     robustProvider = new RobustProvider(rpcUrls, async () => {
         console.log("[System] Provider switched/reconnected. Re-binding events...");
         
-        // [Important] Must update global provider reference after switching Provider
         provider = robustProvider.getProvider();
         
         // [Important] Wallet also needs to reconnect to the new Provider, otherwise transactions will fail with Network Error
         // Note: Since wallet is a global variable, we need to update its provider
         wallet = wallet.connect(provider) as any; 
-        
-        // Re-bind contract Provider
         poolContract = poolContract.connect(provider) as ethers.Contract;
-        // npm and aaveManager use the wallet internally; they will update automatically as long as the wallet updates its provider
+        npm = npm.connect(wallet) as ethers.Contract; 
+        aave = new AaveManager(wallet);
+
+        console.log("[System] Contracts and Managers re-linked to new provider.");
         
         await setupEventListeners();
     });

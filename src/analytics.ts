@@ -1,6 +1,6 @@
 import axios from 'axios';
-
 import { RSI, ATR } from 'technicalindicators';
+import { withRetry } from './utils'; // Reuse retry logic
 
 // Binance API for public market data
 const BINANCE_API_URL = 'https://api.binance.com/api/v3/klines';
@@ -35,7 +35,8 @@ async function fetchCandles(symbol: string, interval: string, limit: number): Pr
 
 export async function getEthRsi(interval: string = '1h', period: number = 14): Promise<number> {
     try {
-        const data = await fetchCandles('ETHUSDT', interval, period + 50);
+        // Use withRetry to increase stability
+        const data = await withRetry(() => fetchCandles('ETHUSDT', interval, period + 50));
         
         const inputRSI = {
             values: data.close,
@@ -47,10 +48,10 @@ export async function getEthRsi(interval: string = '1h', period: number = 14): P
         if (rsiResult.length > 0) {
             return rsiResult[rsiResult.length - 1];
         }
-        return 50; 
-
+        throw new Error("Insufficient data for RSI");
     } catch (error) {
-        return 50; // Default neutral
+        console.error(`[Analytics] Failed to fetch RSI: ${(error as Error).message}`);
+        throw error; // Throw error to stop strategy execution and prevent wrong positioning
     }
 }
 
@@ -60,7 +61,8 @@ export async function getEthRsi(interval: string = '1h', period: number = 14): P
  */
 export async function getEthAtr(interval: string = '1h', period: number = 14): Promise<number> {
     try {
-        const data = await fetchCandles('ETHUSDT', interval, period + 20);
+        // Use withRetry to increase stability
+        const data = await withRetry(() => fetchCandles('ETHUSDT', interval, period + 20));
         
         const inputATR = {
             high: data.high,
