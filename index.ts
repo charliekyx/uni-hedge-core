@@ -57,7 +57,13 @@ async function initialize() {
         
         // [Important] Wallet also needs to reconnect to the new Provider, otherwise transactions will fail with Network Error
         // Note: Since wallet is a global variable, we need to update its provider
-        wallet = wallet.connect(provider) as any; 
+       const newWallet = wallet.connect(provider);
+
+        const userAddress = await newWallet.getAddress();
+        (newWallet as any).address = userAddress;
+        
+        wallet = newWallet as any;
+        
         poolContract = poolContract.connect(provider) as ethers.Contract;
         npm = npm.connect(wallet) as ethers.Contract; 
         aave = new AaveManager(wallet);
