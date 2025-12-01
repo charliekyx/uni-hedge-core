@@ -20,7 +20,7 @@ import { sendEmailAlert } from "./src/utils";
 
 dotenv.config();
 
-const HEDGE_CHECK_INTERVAL_MS = 60 * 1000; 
+const HEDGE_CHECK_INTERVAL_MS = 60 * 1000; // 1 min
 
 let wallet: ethers.Wallet;
 let provider: ethers.Provider;
@@ -37,7 +37,7 @@ let isSafeMode = false;
 
 // Last run timestamp for block listener throttling
 let lastRunTime = 0;
-const MIN_INTERVAL_MS = 3000;
+const MIN_INTERVAL_MS = 3000; // 3s
 
 async function initialize() {
     const rpcEnv = process.env.RPC_URL || "";
@@ -122,6 +122,7 @@ async function setupEventListeners() {
         const now = Date.now();
         
         if (now - lastRunTime < MIN_INTERVAL_MS) {
+            console.log("[rpc limit]: skip less than")
             return; 
         }
 
