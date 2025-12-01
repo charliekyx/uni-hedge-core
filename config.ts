@@ -41,8 +41,8 @@ export const REBALANCE_THRESHOLD_USDC = 30_000_000n;
 export const REBALANCE_THRESHOLD_WETH = 10_000_000_000_000_000n;
 
 // --- Aave Configuration ---
-export const AAVE_TARGET_HEALTH_FACTOR = 2.0; // Target safety buffer
-export const AAVE_MIN_HEALTH_FACTOR = 1.5;    // Critical warning level
+export const AAVE_TARGET_HEALTH_FACTOR = 1.3; // Target safety buffer
+export const AAVE_MIN_HEALTH_FACTOR = 1.1;    // Critical warning level
 
 // --- ABIs ---
 export const ERC20_ABI = [
