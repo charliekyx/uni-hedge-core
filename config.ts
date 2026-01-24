@@ -40,6 +40,13 @@ export const REBALANCE_THRESHOLD_USDC = 30_000_000n;
 // 0.01 WETH (18 decimals) = 10,000,000,000,000,000
 export const REBALANCE_THRESHOLD_WETH = 10_000_000_000_000_000n;
 
+// --- Hedging ---
+export const HEDGE_ENABLED = true;
+
+// --- Auto-Invest Feature ---
+export const AUTO_INVEST_NEW_FUNDS = true; // Enable/disable auto-investment of new deposits
+export const AUTO_INVEST_THRESHOLD_USDC = 100_000_000n; // 100 USDC
+
 // --- Aave Configuration ---
 export const AAVE_TARGET_HEALTH_FACTOR = 1.7; // Target safety buffer
 export const AAVE_MIN_HEALTH_FACTOR = 1.5;    // Critical warning level

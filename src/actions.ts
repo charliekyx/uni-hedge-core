@@ -495,5 +495,6 @@ export async function executeFullRebalance(
         tickLower,
         tickUpper
     );
-    saveState(newTokenId);
+    const usdcBalanceAfterMint = await getBalance(USDC_TOKEN, wallet);
+    saveState({ tokenId: newTokenId, lastKnownUSDCBalance: usdcBalanceAfterMint.toString() });
 }

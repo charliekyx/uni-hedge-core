@@ -12,6 +12,7 @@ const STATE_FILE = path.join(process.cwd(), "bot_state.json");
 export interface BotState {
     tokenId: string; // tokenid from my last postion mint
     lastCheck: number;
+    lastKnownUSDCBalance: string; // To track deposits
 }
 
 export function loadState(): BotState {
@@ -22,13 +23,18 @@ export function loadState(): BotState {
             console.error("[System] Corrupt state file. Resetting.");
         }
     }
-    return { tokenId: "0", lastCheck: 0 };
+    return { tokenId: "0", lastCheck: 0, lastKnownUSDCBalance: "0" };
 }
 
-export function saveState(tokenId: string) {
-    const state: BotState = { tokenId, lastCheck: Date.now() };
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-    console.log(`[System] State saved: Token ID ${tokenId}`);
+export function saveState(update: Partial<BotState>) {
+    const currentState = loadState();
+    const newState: BotState = {
+        ...currentState,
+        ...update,
+        lastCheck: Date.now(),
+    };
+    fs.writeFileSync(STATE_FILE, JSON.stringify(newState, null, 2));
+    console.log(`[System] State saved. Current Token ID: ${newState.tokenId}`);
 }
 
 // Orphan Position Scanning
@@ -55,7 +61,7 @@ export async function scanLocalOrphans(wallet: ethers.Wallet): Promise<string> {
     if (pos.liquidity > 0n) {
         console.warn(`[State] FOUND ORPHAN POSITION: ID ${tokenId} (Liq: ${pos.liquidity})`);
         console.warn(`[State] Adopting this position and updating state file.`);
-        saveState(tokenId.toString());
+        saveState({ tokenId: tokenId.toString() });
         return tokenId.toString();
     }
 

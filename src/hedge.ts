@@ -17,6 +17,7 @@ import {
     QUOTER_ADDR,
     QUOTER_ABI,
     SLIPPAGE_TOLERANCE,
+    HEDGE_ENABLED,
 } from "../config";
 
 import { withRetry, waitWithTimeout, sendEmailAlert, getPoolTwap } from "./utils";
@@ -361,7 +362,7 @@ export class AaveManager {
             if (lpTokenId && lpTokenId !== "0") {
                await atomicExitPosition(this.wallet, lpTokenId);
 
-                await saveState("0"); // The program will restart itself; it is important to reset position token
+                await saveState({ tokenId: "0" }); // The program will restart itself; it is important to reset position token
                 console.log("   [Panic] LP Closed & State Reset.");
             }
         } catch (e) {
@@ -384,7 +385,29 @@ export class AaveManager {
         console.log(`[EXIT] Panic Cleanup Complete. Entering SAFE MODE.`);
     }
 
+
+    async closePositions() {
+        console.log(`[Aave] Closing all positions...`);
+        try {
+            const currentDebt = await this.getCurrentEthDebt();
+            if (currentDebt > 0n) {
+                console.log(`   [Aave] Found debt: ${ethers.formatEther(currentDebt)} ETH`);
+                await this.decreaseShort(currentDebt, true); 
+            } else {
+                console.log(`   [Aave] No debt found.`);
+            }
+        } catch (e) {
+            console.error("   [Aave] Failed to close positions:", e);
+            await sendEmailAlert("[Aave] Failed to close positions", String(e));
+        }
+    }
+
     async adjustHedge(lpEthAmount: bigint, lpTokenId: string) {
+        if (!HEDGE_ENABLED) {
+            console.log(`\n[Hedge] Hedging is disabled. Skipping check.`);
+            return;
+        }
+
         // Double check safety level 
         const hf = await this.getHealthFactor();
         if (hf < AAVE_MIN_HEALTH_FACTOR) {

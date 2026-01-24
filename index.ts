@@ -10,10 +10,13 @@ import {
     NPM_ABI,
     NONFUNGIBLE_POSITION_MANAGER_ADDR,
     V3_FACTORY_ADDR,
+    AUTO_INVEST_NEW_FUNDS,
+    AUTO_INVEST_THRESHOLD_USDC,
+    ERC20_ABI,
 } from "./config";
 
-import { loadState, scanLocalOrphans } from "./src/state"; // [Added] scanLocalOrphans
-import { approveAll, executeFullRebalance } from "./src/actions";
+import { loadState, scanLocalOrphans, saveState } from "./src/state"; // [Added] scanLocalOrphans
+import { approveAll, executeFullRebalance, getBalance, atomicExitPosition } from "./src/actions";
 import { AaveManager } from "./src/hedge";
 import { RobustProvider } from "./src/connection";
 import { sendEmailAlert } from "./src/utils";
@@ -138,58 +141,62 @@ async function setupEventListeners() {
 }
 
 async function onNewBlock(blockNumber: number) {
-    const { tokenId } = await loadState();
+    let { tokenId, lastKnownUSDCBalance } = await loadState();
+    let forceRebalance = false;
+
+    // --- Auto-Invest Deposit Check ---
+    if (AUTO_INVEST_NEW_FUNDS) {
+        const currentUSDCBalance = await getBalance(USDC_TOKEN, wallet);
+        
+        if (lastKnownUSDCBalance === undefined || lastKnownUSDCBalance === "0") {
+            console.log("[Auto-Invest] Initializing baseline USDC balance.");
+            saveState({ lastKnownUSDCBalance: currentUSDCBalance.toString() });
+            lastKnownUSDCBalance = currentUSDCBalance.toString();
+        } else {
+            const depositAmount = currentUSDCBalance - BigInt(lastKnownUSDCBalance);
+            if (depositAmount >= AUTO_INVEST_THRESHOLD_USDC) {
+                console.log(`[Auto-Invest] New deposit of ${ethers.formatUnits(depositAmount, 6)} USDC detected. Scheduling a rebalance.`);
+                forceRebalance = true;
+            }
+        }
+    }
 
     if (!tokenId || tokenId === "0") {
-        console.log(`[Block ${blockNumber}] No active position. Initializing Strategy...`);
-
-        // ... Fetch Pool Data ...
-        const [slot0, liquidity] = await Promise.all([
-            poolContract.slot0(),
-            poolContract.liquidity(),
-        ]);
-
-        const configuredPool = new Pool(
-            USDC_TOKEN,
-            WETH_TOKEN,
-            POOL_FEE,
-            slot0.sqrtPriceX96.toString(),
-            liquidity.toString(),
-            Number(slot0.tick)
-        );
-
-        // If executeFullRebalance throws (e.g. TWAP check failed), catch it here
-        // protects app from crashing, waits for next block retry.
-        await executeFullRebalance(wallet, configuredPool, "0");
-
-        lastHedgeTime = 0;
+        if (forceRebalance || !AUTO_INVEST_NEW_FUNDS) {
+            console.log(`[Block ${blockNumber}] No active position. Initializing strategy...`);
+            await executeFullRebalanceWrapper(blockNumber, "0", forceRebalance);
+            lastHedgeTime = 0;
+        } else {
+            console.log(`[Block ${blockNumber}] No active position and no new funds to invest. Waiting...`);
+        }
         return;
     }
 
     // ============================================================
     // CRITICAL PATH: SAFETY CHECK
     // ============================================================
-    // If check returns false, enter Safe Mode
     const isSafe = await aave.checkHealthAndPanic(tokenId, poolContract);
-
     if (!isSafe) {
         console.error("[System] Panic exit triggered. Entering SAFE MODE.");
         await sendEmailAlert("Bot Stopped", "Entered SAFE MODE after panic exit.");
-        isSafeMode = true; // Lock status, stop all operations
+        isSafeMode = true;
         return;
     }
-
+    
     // ============================================================
     // STRATEGY PATH
     // ============================================================
-
     const now = Date.now();
-    if (now - lastHedgeTime < HEDGE_CHECK_INTERVAL_MS) {
+    if (!forceRebalance && (now - lastHedgeTime < HEDGE_CHECK_INTERVAL_MS)) {
         return;
     }
 
     console.log(`[Block ${blockNumber}] Running Strategy Logic...`);
+    await executeFullRebalanceWrapper(blockNumber, tokenId, forceRebalance);
+    lastHedgeTime = Date.now();
+}
 
+async function executeFullRebalanceWrapper(blockNumber: number, tokenId: string, force: boolean) {
     const [slot0, liquidity] = await Promise.all([
         poolContract.slot0(),
         poolContract.liquidity(),
@@ -204,44 +211,54 @@ async function onNewBlock(blockNumber: number) {
         liquidity.toString(),
         currentTick
     );
+    
+    if (tokenId !== "0") {
+        const pos = await npm.positions(tokenId);
+        if (pos.liquidity === 0n) {
+            await sendEmailAlert("CRITICAL: Position Closed.", `ID: ${tokenId}`);
+            await scanLocalOrphans(wallet); 
+            return;
+        }
 
-    const pos = await npm.positions(tokenId);
-    if (pos.liquidity === 0n) {
-        await sendEmailAlert("CRITICAL: Position Closed.", `ID: ${tokenId}`);
-        // Mark as orphan or reset
-        await scanLocalOrphans(wallet); 
-        return null;
+        const tl = Number(pos.tickLower);
+        const tu = Number(pos.tickUpper);
+
+        // If we are not forcing a rebalance AND the position is in range, just adjust the hedge
+        if (!force && (currentTick >= tl && currentTick <= tu)) {
+            console.log(`[Strategy] In Range. Adjusting Hedge...`);
+            
+            const positionSDK = new Position({
+                pool: configuredPool,
+                liquidity: pos.liquidity.toString(),
+                tickLower: tl,
+                tickUpper: tu,
+            });
+
+            const amount0 = BigInt(positionSDK.amount0.quotient.toString());
+            const amount1 = BigInt(positionSDK.amount1.quotient.toString());
+
+            const lpEthAmount =
+                WETH_TOKEN.address.toLowerCase() < USDC_TOKEN.address.toLowerCase()
+                    ? amount0
+                    : amount1;
+
+            await aave.adjustHedge(lpEthAmount, tokenId);
+            return;
+        }
+        
+        if (force) {
+            console.log(`[Strategy] Forcing rebalance to incorporate new funds.`);
+        } else {
+            console.log(`[Strategy] Out of Range. Rebalancing...`);
+        }
     }
 
-    const tl = Number(pos.tickLower);
-    const tu = Number(pos.tickUpper);
-
-    if (currentTick < tl || currentTick > tu) {
-        console.log(`[Strategy] Out of Range. Rebalancing...`);    
+    try {
         await executeFullRebalance(wallet, configuredPool, tokenId);
-        lastHedgeTime = Date.now(); 
-        return;
+    } catch (e) {
+        console.error(`[Rebalance] Failed during full rebalance at block ${blockNumber}:`, e);
     }
-
-    // Check Hedge
-    const positionSDK = new Position({
-        pool: configuredPool,
-        liquidity: pos.liquidity.toString(),
-        tickLower: tl,
-        tickUpper: tu,
-    });
-
-    const amount0 = BigInt(positionSDK.amount0.quotient.toString());
-    const amount1 = BigInt(positionSDK.amount1.quotient.toString());
-
-    const lpEthAmount =
-        WETH_TOKEN.address.toLowerCase() < USDC_TOKEN.address.toLowerCase()
-            ? amount0
-            : amount1;
-
-    await aave.adjustHedge(lpEthAmount, tokenId);
-
-    lastHedgeTime = Date.now();
 }
+
 
 initialize().catch(console.error);
