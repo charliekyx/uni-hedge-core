@@ -150,8 +150,15 @@ async function onNewBlock(blockNumber: number) {
         
         if (lastKnownUSDCBalance === undefined || lastKnownUSDCBalance === "0") {
             console.log("[Auto-Invest] Initializing baseline USDC balance.");
-            saveState({ lastKnownUSDCBalance: currentUSDCBalance.toString() });
-            lastKnownUSDCBalance = currentUSDCBalance.toString();
+
+            // If we have funds and no position on startup, invest immediately instead of waiting
+            if (tokenId === "0" && currentUSDCBalance >= AUTO_INVEST_THRESHOLD_USDC) {
+                console.log(`[Auto-Invest] Initial funds detected (${ethers.formatUnits(currentUSDCBalance, 6)} USDC). Triggering initial investment.`);
+                forceRebalance = true;
+            } else {
+                saveState({ lastKnownUSDCBalance: currentUSDCBalance.toString() });
+                lastKnownUSDCBalance = currentUSDCBalance.toString();
+            }
         } else {
             const depositAmount = currentUSDCBalance - BigInt(lastKnownUSDCBalance);
             if (depositAmount >= AUTO_INVEST_THRESHOLD_USDC) {
