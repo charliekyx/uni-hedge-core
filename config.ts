@@ -41,7 +41,7 @@ export const REBALANCE_THRESHOLD_USDC = 30_000_000n;
 export const REBALANCE_THRESHOLD_WETH = 10_000_000_000_000_000n;
 
 // --- Hedging ---
-export const HEDGE_ENABLED = true;
+export const HEDGE_ENABLED = false;
 
 // --- Auto-Invest Feature ---
 export const AUTO_INVEST_NEW_FUNDS = true; // Enable/disable auto-investment of new deposits
