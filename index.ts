@@ -133,6 +133,11 @@ async function setupEventListeners() {
             lastRunTime = now; 
             await onNewBlock(blockNumber);
         } catch (e) {
+            if ((e as Error).message.includes("PROFIT_SECURED")) {
+                console.error("!!! [System] Strategy Stop Signal Received.");
+                await sendEmailAlert("Bot Stopped: Profit Secured", `The bot has stopped trading.\nReason: ${(e as Error).message}`);
+                process.exit(0);
+            }
             console.error(`[Block ${blockNumber}] Error:`, e);
         } finally {
             isProcessing = false;
@@ -263,9 +268,16 @@ async function executeFullRebalanceWrapper(blockNumber: number, tokenId: string,
     try {
         await executeFullRebalance(wallet, configuredPool, tokenId);
     } catch (e) {
+        if ((e as Error).message.includes("PROFIT_SECURED")) {
+            throw e; // Rethrow to let the block listener handle the exit
+        }
         console.error(`[Rebalance] Failed during full rebalance at block ${blockNumber}:`, e);
     }
 }
 
 
-initialize().catch(console.error);
+initialize().catch(async (e) => {
+    console.error(e);
+    await sendEmailAlert("Bot Crashed", `The bot process exited unexpectedly.\nError: ${e.message}`);
+    process.exit(1);
+});

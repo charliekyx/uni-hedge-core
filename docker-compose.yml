@@ -2,8 +2,7 @@ services:
   uni-bot:
     build: .
     container_name: uni-bot
-    restart: always
-    
+
     # 1. This tells Docker to read your local .env file
     env_file:
       - .env

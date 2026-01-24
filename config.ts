@@ -32,11 +32,11 @@ export const RSI_OVERSOLD = 25;
 // a Risk Management parameter. It determines how "conservative" or "aggressive" your bot is.
 // ATR (Average True Range): This tells you the average volatility over the past few hours.
 // The Problem: The market doesn't always follow the "average." A sudden crash or pump can be 2x or 3x the average volatility.
-export const ATR_SAFETY_FACTOR = 4;
+export const ATR_SAFETY_FACTOR = 10;
 
  // 30 USDC (6 decimals) = 30,000,000
  // for fund around 2000 - 3000 this threshold is good, prevent from rebalancing too often
-export const REBALANCE_THRESHOLD_USDC = 30_000_000n;
+export const REBALANCE_THRESHOLD_USDC = 150_000_000n;
 // 0.01 WETH (18 decimals) = 10,000,000,000,000,000
 export const REBALANCE_THRESHOLD_WETH = 10_000_000_000_000_000n;
 

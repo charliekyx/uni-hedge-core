@@ -165,6 +165,16 @@ export async function rebalancePortfolio(
         // Sell USDC
         const diff = usdcAmount.subtract(wethValueInUsdc);
         const amountToSell = diff.divide(2);
+        
+        // [Strategy: Profit Taking]
+        // If we have a lot of USDC and very little ETH, it means ETH price skyrocketed out of range.
+        // We stop here to secure profits in USDC and avoid FOMO buying at the top.
+        const wethBalanceRaw = await getBalance(WETH_TOKEN, wallet);
+        if (wethBalanceRaw < ethers.parseEther("0.005")) {
+             console.log("!!! [Strategy Trigger] ETH Pumped. Profit secured in USDC.");
+             console.log("!!! [Strategy Trigger] Stopping bot to avoid FOMO buying.");
+             throw new Error("PROFIT_SECURED: Holding USDC. Stopping to avoid FOMO buying.");
+        }
 
         if (BigInt(amountToSell.quotient.toString()) < REBALANCE_THRESHOLD_USDC) {
             console.log("   Balance is good enough. Skipping swap.");
@@ -203,7 +213,9 @@ export async function rebalancePortfolio(
     } else {
         // Sell WETH
         const diffValueInUsdc = wethValueInUsdc.subtract(usdcAmount);
-        const amountToSellValue = diffValueInUsdc.divide(2);
+        
+        // [Strategy: Accumulation] Sell less ETH (1/4 instead of 1/2) to keep more chips during dips.
+        const amountToSellValue = diffValueInUsdc.divide(4);
 
         const priceUsdcToWeth =
             configuredPool.token0.address === USDC_TOKEN.address
