@@ -32,7 +32,7 @@ export const RSI_OVERSOLD = 25;
 // a Risk Management parameter. It determines how "conservative" or "aggressive" your bot is.
 // ATR (Average True Range): This tells you the average volatility over the past few hours.
 // The Problem: The market doesn't always follow the "average." A sudden crash or pump can be 2x or 3x the average volatility.
-export const ATR_SAFETY_FACTOR = 10;
+export const ATR_SAFETY_FACTOR = 4;
 
  // 30 USDC (6 decimals) = 30,000,000
  // for fund around 2000 - 3000 this threshold is good, prevent from rebalancing too often
@@ -46,6 +46,12 @@ export const HEDGE_ENABLED = false;
 // --- Auto-Invest Feature ---
 export const AUTO_INVEST_NEW_FUNDS = true; // Enable/disable auto-investment of new deposits
 export const AUTO_INVEST_THRESHOLD_USDC = 100_000_000n; // 100 USDC
+
+// --- Auto-Resume Feature ---
+// After taking profit, the bot will enter standby mode. It will resume trading
+// automatically after the price pulls back by this percentage from the peak.
+// e.g., 0.10 = 10% pullback
+export const PULLBACK_THRESHOLD = 0.10;
 
 // --- Aave Configuration ---
 export const AAVE_TARGET_HEALTH_FACTOR = 1.7; // Target safety buffer

@@ -12,6 +12,7 @@ import {
     V3_FACTORY_ADDR,
     AUTO_INVEST_NEW_FUNDS,
     AUTO_INVEST_THRESHOLD_USDC,
+    PULLBACK_THRESHOLD, // &lt;-- Imported from config
     ERC20_ABI,
 } from "./config";
 
@@ -37,6 +38,10 @@ let lastHedgeTime = 0;
 
 // Safe Mode Flag
 let isSafeMode = false;
+
+// [Auto-Resume]
+let isProfitStandby = false; // Is it in standby after taking profit
+let profitSecuredPrice = 0;  // Record the price at profit taking
 
 // Last run timestamp for block listener throttling
 let lastRunTime = 0;
@@ -103,6 +108,30 @@ async function initialize() {
     }
 
     await setupEventListeners();
+
+    // 每天 (24小时) 发送一次状态报告
+    setInterval(async () => {
+        try {
+            const balUSDC = await getBalance(USDC_TOKEN, wallet);
+            const balWETH = await getBalance(WETH_TOKEN, wallet);
+            const { tokenId } = await loadState();
+            
+            const msg = `
+            [Daily Report]
+            Status: ${isProfitStandby ? `STANDBY (All USDC, profit taken at $${profitSecuredPrice})` : "ACTIVE (Farming)"}
+            Token ID: ${tokenId || "None"}
+            Balance USDC: ${ethers.formatUnits(balUSDC, 6)}
+            Balance WETH: ${ethers.formatEther(balWETH)}
+            `;
+            
+            console.log("[System] Sending Daily Report...");
+            await sendEmailAlert("Daily Bot Report", msg);
+        } catch (e) {
+            console.error("[System] Daily report failed:", e);
+            await sendEmailAlert("Daily Bot Report FAILED", `Failed to generate report: ${e}`);
+        }
+    }, 24 * 60 * 60 * 1000); // 24小时
+
 }
 
 async function setupEventListeners() {
@@ -134,9 +163,36 @@ async function setupEventListeners() {
             await onNewBlock(blockNumber);
         } catch (e) {
             if ((e as Error).message.includes("PROFIT_SECURED")) {
-                console.error("!!! [System] Strategy Stop Signal Received.");
-                await sendEmailAlert("Bot Stopped: Profit Secured", `The bot has stopped trading.\nReason: ${(e as Error).message}`);
-                process.exit(0);
+                console.log("[System] Strategy Triggered: Profit Secured.");
+                console.log("[System] Entering STANDBY MODE. Will periodically check for reentry conditions.");
+                
+                // 发送邮件通知，但不退出了
+                await sendEmailAlert("Bot Standby: Profit Secured", `Sold all ETH for USDC. Bot is now waiting for opportunities.`);
+                
+                isProfitStandby = true; // &lt;--- 关键：标记为待机
+
+                // --- 记录当前价格 ---
+                try {
+                    const [slot0] = await poolContract.slot0();
+                    const configuredPool = new Pool(
+                        USDC_TOKEN,
+                        WETH_TOKEN,
+                        POOL_FEE,
+                        slot0.sqrtPriceX96.toString(),
+                        "0", // Liquidity doesn't matter for price
+                        Number(slot0.tick)
+                    );
+                    const priceStr = (WETH_TOKEN.address.toLowerCase() < USDC_TOKEN.address.toLowerCase()) ? configuredPool.token1Price.toSignificant(6) : configuredPool.token0Price.toSignificant(6);
+                    profitSecuredPrice = parseFloat(priceStr);
+                    console.log(`[Standby] Profit secured at price: ${profitSecuredPrice}`);
+                } catch (priceError) {
+                    console.error("[Standby] CRITICAL: Failed to record profit-taking price:", priceError);
+                    // If we can't get the price, we can't automatically re-enter.
+                    // Send an alert and keep it in standby for manual intervention.
+                    await sendEmailAlert("Bot Standby Error", "Profit secured, but failed to record current price. Manual restart required after dip.");
+                }
+                
+                return; // End processing for this block
             }
             console.error(`[Block ${blockNumber}] Error:`, e);
         } finally {
@@ -148,6 +204,39 @@ async function setupEventListeners() {
 async function onNewBlock(blockNumber: number) {
     let { tokenId, lastKnownUSDCBalance } = await loadState();
     let forceRebalance = false;
+
+    // --- [Auto-Resume] Standby Check ---
+    if (isProfitStandby) {
+        if (profitSecuredPrice > 0) {
+            const [slot0] = await poolContract.slot0();
+            const configuredPool = new Pool(
+                USDC_TOKEN,
+                WETH_TOKEN,
+                POOL_FEE,
+                slot0.sqrtPriceX96.toString(),
+                "0", // Liquidity doesn't matter for price
+                Number(slot0.tick)
+            );
+            const priceStr = (WETH_TOKEN.address.toLowerCase() < USDC_TOKEN.address.toLowerCase()) ? configuredPool.token1Price.toSignificant(6) : configuredPool.token0Price.toSignificant(6);
+            const currentPrice = parseFloat(priceStr);
+            
+            const reentryPrice = profitSecuredPrice * (1 - PULLBACK_THRESHOLD);
+
+            console.log(`[Standby] Checking for re-entry. Current Price: ${currentPrice}, Re-entry Target: < ${reentryPrice.toFixed(2)}`);
+
+            if (currentPrice < reentryPrice) {
+                console.log(`[Standby] Price has pulled back sufficiently! Resuming trading...`);
+                await sendEmailAlert("Bot Resuming", `Price dropped to ${currentPrice.toFixed(2)}. Re-entering position.`);
+                isProfitStandby = false;
+                profitSecuredPrice = 0;
+                forceRebalance = true; // Force re-invest
+            } else {
+                 console.log(`[Standby] Bot is holding USDC (Profit Secured). Waiting for dip...`);
+            }
+        } else {
+            console.warn('[Standby] In standby mode but profitSecuredPrice is not set. Manual action may be needed.');
+        }
+    }
 
     // --- Auto-Invest Deposit Check ---
     if (AUTO_INVEST_NEW_FUNDS) {
