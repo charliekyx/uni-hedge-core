@@ -120,7 +120,13 @@ async function initialize() {
         console.warn("[Security] WARNING: Initializing wallet from a plaintext PRIVATE_KEY. For production and larger funds, using an encrypted keystore is strongly recommended.");
         baseWallet = new ethers.Wallet(privateKey, provider);
     } else {
-        throw new Error("Wallet initialization failed: Please provide either KEYSTORE_PATH (and KEYSTORE_PASSWORD) or a PRIVATE_KEY in your .env file.");
+        console.log("[Security] No credentials found in .env. Switching to manual private key input mode.");
+        let inputKey = await askHidden("Please enter your Private Key (hidden): ");
+        inputKey = inputKey.trim();
+        if (!inputKey) throw new Error("No private key entered.");
+        if (!inputKey.startsWith("0x")) inputKey = "0x" + inputKey;
+        baseWallet = new ethers.Wallet(inputKey, provider);
+        console.log("[Security] Wallet temporarily loaded from manual input.");
     }
     const managedWallet = new NonceManager(baseWallet);
     (managedWallet as any).address = baseWallet.address;
