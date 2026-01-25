@@ -3,6 +3,8 @@ services:
     build: .
     container_name: uni-bot
     restart: always
+    stdin_open: true
+    tty: true
 
     # 1. This tells Docker to read your local .env file
     env_file:
