@@ -1,6 +1,9 @@
 import { ethers, NonceManager } from "ethers";
 import { Pool, Position } from "@uniswap/v3-sdk";
+import * as fs from "fs";
 import * as dotenv from "dotenv";
+import * as readline from "readline";
+import { Writable } from "stream";
 
 import {
     USDC_TOKEN,
@@ -84,7 +87,41 @@ async function initialize() {
     provider = robustProvider.getProvider();
     
     // [Note] When initializing wallet here
-    const baseWallet = new ethers.Wallet(process.env.PRIVATE_KEY!, provider);
+    // --- [New] Secure Wallet Initialization ---
+    let baseWallet: ethers.Wallet;
+    const keystorePath = process.env.KEYSTORE_PATH;
+    const privateKey = process.env.PRIVATE_KEY;
+
+    if (keystorePath) {
+        console.log(`[Security] Initializing wallet from encrypted keystore: ${keystorePath}`);
+        if (!fs.existsSync(keystorePath)) {
+            throw new Error(`Keystore file not found at path: ${keystorePath}`);
+        }
+        const keystoreJson = fs.readFileSync(keystorePath, 'utf8');
+        let password = process.env.KEYSTORE_PASSWORD;
+
+        if (!password) {
+            console.log("[Security] KEYSTORE_PASSWORD not found in .env. Switching to manual input mode.");
+            password = await askHidden("Please enter Keystore Password to unlock wallet: ");
+        }
+
+        try {
+            // Decrypt and connect to provider
+            const decryptedWallet = await ethers.Wallet.fromEncryptedJson(keystoreJson, password);
+            baseWallet = decryptedWallet.connect(provider) as ethers.Wallet;
+        } catch (e) {
+            console.error("[Security] Failed to decrypt keystore. Please check your password and keystore file.");
+            // Hide detailed error to avoid leaking info
+            throw new Error("Keystore decryption failed."); 
+        }
+        console.log("[Security] Wallet successfully decrypted from keystore.");
+
+    } else if (privateKey) {
+        console.warn("[Security] WARNING: Initializing wallet from a plaintext PRIVATE_KEY. For production and larger funds, using an encrypted keystore is strongly recommended.");
+        baseWallet = new ethers.Wallet(privateKey, provider);
+    } else {
+        throw new Error("Wallet initialization failed: Please provide either KEYSTORE_PATH (and KEYSTORE_PASSWORD) or a PRIVATE_KEY in your .env file.");
+    }
     const managedWallet = new NonceManager(baseWallet);
     (managedWallet as any).address = baseWallet.address;
     wallet = managedWallet as any;
@@ -370,3 +407,30 @@ initialize().catch(async (e) => {
     await sendEmailAlert("Bot Crashed", `The bot process exited unexpectedly.\nError: ${e.message}`);
     process.exit(1);
 });
+
+function askHidden(query: string): Promise<string> {
+    return new Promise((resolve) => {
+        let muted = false;
+        
+        const mutableStdout = new Writable({
+            write: function(chunk, encoding, callback) {
+                if (!muted) process.stdout.write(chunk, encoding);
+                callback();
+            }
+        });
+
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: mutableStdout,
+            terminal: true
+        });
+
+        rl.question(query, (answer) => {
+            rl.close();
+            console.log(''); 
+            resolve(answer);
+        });
+        
+        muted = true;
+    });
+}
