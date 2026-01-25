@@ -1,5 +1,8 @@
 import { ethers, NonceManager } from "ethers";
 import * as dotenv from "dotenv";
+import * as fs from "fs";
+import * as readline from "readline";
+import { Writable } from "stream";
 
 import {
     NPM_ABI,
@@ -54,7 +57,31 @@ async function initialize() {
 
     provider = robustProvider.getProvider();
     
-    const baseWallet = new ethers.Wallet(process.env.PRIVATE_KEY!, provider);
+    // --- Secure Wallet Initialization ---
+    let baseWallet: ethers.Wallet;
+    const keystorePath = process.env.KEYSTORE_PATH;
+    const privateKey = process.env.PRIVATE_KEY;
+
+    if (keystorePath) {
+        if (!fs.existsSync(keystorePath)) {
+            throw new Error(`Keystore file not found at path: ${keystorePath}`);
+        }
+        const keystoreJson = fs.readFileSync(keystorePath, 'utf8');
+        let password = process.env.KEYSTORE_PASSWORD;
+
+        if (!password) {
+            console.log("[Security] KEYSTORE_PASSWORD not found in .env. Switching to manual input mode.");
+            password = await askHidden("Please enter Keystore Password to unlock wallet: ");
+        }
+
+        const decryptedWallet = await ethers.Wallet.fromEncryptedJson(keystoreJson, password);
+        baseWallet = decryptedWallet.connect(provider) as ethers.Wallet;
+    } else if (privateKey) {
+        baseWallet = new ethers.Wallet(privateKey, provider);
+    } else {
+        throw new Error("Wallet initialization failed: Please provide KEYSTORE_PATH or PRIVATE_KEY.");
+    }
+
     const managedWallet = new NonceManager(baseWallet);
     (managedWallet as any).address = baseWallet.address;
     wallet = managedWallet as any;
@@ -68,6 +95,33 @@ async function initialize() {
 
     await manualClosePosition();
     process.exit(0);
+}
+
+function askHidden(query: string): Promise<string> {
+    return new Promise((resolve) => {
+        let muted = false;
+        
+        const mutableStdout = new Writable({
+            write: function(chunk, encoding, callback) {
+                if (!muted) process.stdout.write(chunk, encoding);
+                callback();
+            }
+        });
+
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: mutableStdout,
+            terminal: true
+        });
+
+        rl.question(query, (answer) => {
+            rl.close();
+            console.log(''); 
+            resolve(answer);
+        });
+        
+        muted = true;
+    });
 }
 
 initialize().catch(console.error);
