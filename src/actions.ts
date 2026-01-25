@@ -124,7 +124,8 @@ export async function atomicExitPosition(
 
 export async function rebalancePortfolio(
     wallet: ethers.Wallet,
-    configuredPool: Pool
+    configuredPool: Pool,
+    tokenId: string
 ) {
     console.log(`\n[Rebalance] Calculating Optimal Swap with RSI Filter...`);
 
@@ -170,7 +171,7 @@ export async function rebalancePortfolio(
         // If we have a lot of USDC and very little ETH, it means ETH price skyrocketed out of range.
         // We stop here to secure profits in USDC and avoid FOMO buying at the top.
         const wethBalanceRaw = await getBalance(WETH_TOKEN, wallet);
-        if (wethBalanceRaw < ethers.parseEther("0.005")) {
+        if (tokenId !== "0" && wethBalanceRaw < ethers.parseEther("0.005")) {
              console.log("!!! [Strategy Trigger] ETH Pumped. Profit secured in USDC.");
              console.log("!!! [Strategy Trigger] Stopping bot to avoid FOMO buying.");
              throw new Error("PROFIT_SECURED: Holding USDC. Stopping to avoid FOMO buying.");
@@ -403,7 +404,7 @@ export async function executeFullRebalance(
 
     // 2. Swap to align portfolio ratio
     try {
-        await rebalancePortfolio(wallet, configuredPool);
+        await rebalancePortfolio(wallet, configuredPool, oldTokenId);
     } catch (e) {
         console.error("   [Rebalance] Swap failed:", e);
         await sendEmailAlert("Rebalance Swap Failed", `Swap likely reverted due to Slippage or Gas: ${e}`);

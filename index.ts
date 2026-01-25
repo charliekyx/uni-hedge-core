@@ -216,7 +216,7 @@ async function setupEventListeners() {
 
                 // --- 记录当前价格 ---
                 try {
-                    const [slot0] = await poolContract.slot0();
+                    const slot0 = await poolContract.slot0();
                     const configuredPool = new Pool(
                         USDC_TOKEN,
                         WETH_TOKEN,
@@ -251,7 +251,7 @@ async function onNewBlock(blockNumber: number) {
     // --- [Auto-Resume] Standby Check ---
     if (isProfitStandby) {
         if (profitSecuredPrice > 0) {
-            const [slot0] = await poolContract.slot0();
+            const slot0 = await poolContract.slot0();
             const configuredPool = new Pool(
                 USDC_TOKEN,
                 WETH_TOKEN,
