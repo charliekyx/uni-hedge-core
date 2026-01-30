@@ -80,7 +80,17 @@ export async function atomicExitPosition(
         wallet
     );
 
-    const pos = await withRetry(() => npm.positions(tokenId));
+    let pos;
+    try {
+        pos = await withRetry(() => npm.positions(tokenId));
+    } catch (e: any) {
+        // If the token is invalid, it means it's likely already burned.
+        if (String(e).includes("Invalid token ID") || e.reason === "Invalid token ID") {
+            console.log(`   [Exit] Token ${tokenId} is invalid (already burned). Skipping exit.`);
+            return;
+        }
+        throw e;
+    }
     const liquidity = pos.liquidity;
 
     const calls: string[] = [];
@@ -400,6 +410,7 @@ export async function executeFullRebalance(
     // 1. Exit Old Position
     if (oldTokenId !== "0") {
         await atomicExitPosition(wallet, oldTokenId);
+        saveState({ tokenId: "0" });
     }
 
     // 2. Swap to align portfolio ratio
