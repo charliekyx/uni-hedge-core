@@ -100,13 +100,15 @@ async function main() {
     console.log(`   当前 USDC 余额: ${ethers.formatUnits(usdcBalanceBefore, 6)} USDC`);
 
     if (wethBalance > 0n) {
-        console.log(`\n正在将 ${ethers.formatEther(wethBalance)} WETH 全部兑换为 USDC...`);
+        const sellPercent = 75n;
+        const sellAmount = (wethBalance * sellPercent) / 100n;
+        console.log(`\n正在将 ${ethers.formatEther(sellAmount)} WETH (${sellPercent}%) 兑换为 USDC...`);
 
         const router = new ethers.Contract(SWAP_ROUTER_ADDR, SWAP_ROUTER_ABI, wallet);
 
         // 授权 (如果需要)
         const allowance = await wethContract.allowance(wallet.address, SWAP_ROUTER_ADDR);
-        if (allowance < wethBalance) {
+        if (allowance < sellAmount) {
             console.log("   正在授权 Router 使用 WETH...");
             const txApprove = await wethContract.approve(SWAP_ROUTER_ADDR, ethers.MaxUint256);
             await txApprove.wait();
@@ -121,7 +123,7 @@ async function main() {
                 fee: POOL_FEE,
                 recipient: wallet.address,
                 deadline: Math.floor(Date.now() / 1000) + 300,
-                amountIn: wethBalance,
+                amountIn: sellAmount,
                 amountOutMinimum: 0, // 紧急模式：不设滑点保护，确保成交
                 sqrtPriceLimitX96: 0,
             };
