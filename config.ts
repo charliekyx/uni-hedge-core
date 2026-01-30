@@ -59,8 +59,13 @@ export const AAVE_MIN_HEALTH_FACTOR = 1.5;    // Critical warning level
 
 // --- Circuit Breaker (Stop Loss) ---
 export const CIRCUIT_BREAKER_ENABLED = true;
-export const CIRCUIT_BREAKER_THRESHOLD = 3500; // USDC (Total Value Threshold)
-export const STOP_LOSS_KEEP_WETH_PERCENT = 0; // Keep 0% WETH when clearing (Sell all)
+
+// Soft Stop (3800): Remove LP, Hold WETH (Wait for bounce)
+// Hard Stop (3400): Remove LP, Sell WETH (Cash out to USDC)
+export const CIRCUIT_BREAKER_SOFT_THRESHOLD = 3800; 
+export const CIRCUIT_BREAKER_HARD_THRESHOLD = 3400;
+
+export const STOP_LOSS_KEEP_WETH_PERCENT = 0; // Only applies to Hard Stop
 
 // --- ABIs ---
 export const ERC20_ABI = [

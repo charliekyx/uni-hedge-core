@@ -14,6 +14,7 @@ export interface BotState {
     lastCheck: number;
     lastKnownUSDCBalance: string; // To track deposits
     stopLossTriggered?: boolean;
+    stopLossType?: "SOFT" | "HARD"; // [Added] Track stop loss level
     circuitBreakerPrice?: number;
 }
 

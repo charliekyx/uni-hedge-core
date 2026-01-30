@@ -18,7 +18,8 @@ import {
     PULLBACK_THRESHOLD, // &lt;-- Imported from config
     ERC20_ABI,
     CIRCUIT_BREAKER_ENABLED,
-    CIRCUIT_BREAKER_THRESHOLD,
+    CIRCUIT_BREAKER_SOFT_THRESHOLD,
+    CIRCUIT_BREAKER_HARD_THRESHOLD,
     STOP_LOSS_KEEP_WETH_PERCENT,
     SWAP_ROUTER_ADDR,
     SWAP_ROUTER_ABI,
@@ -29,7 +30,7 @@ import { loadState, scanLocalOrphans, saveState } from "./src/state"; // [Added]
 import { approveAll, executeFullRebalance, getBalance, atomicExitPosition } from "./src/actions";
 import { AaveManager } from "./src/hedge";
 import { RobustProvider } from "./src/connection";
-import { sendEmailAlert } from "./src/utils";
+import { sendEmailAlert, withRetry } from "./src/utils";
 import { getEthRsi } from "./src/analytics";
 
 dotenv.config();
@@ -59,6 +60,8 @@ const MIN_INTERVAL_MS = 3000; // 3s
 
 // [Circuit Breaker]
 let lastAlertTime = 0;
+let hardStopConfirmationCount = 0;
+let softStopConfirmationCount = 0;
 
 async function initialize() {
     const rpcEnv = process.env.RPC_URL || "";
@@ -258,11 +261,55 @@ async function setupEventListeners() {
 }
 
 async function onNewBlock(blockNumber: number) {
-    let { tokenId, lastKnownUSDCBalance, stopLossTriggered, circuitBreakerPrice } = await loadState() as any;
+    let { tokenId, lastKnownUSDCBalance, stopLossTriggered, stopLossType, circuitBreakerPrice } = await loadState() as any;
+
+    // --- [Circuit Breaker] Monitor Total Value ---
+    // We check this BEFORE the 'stopLossTriggered' return, because we might need to escalate from SOFT -> HARD stop.
+    if (CIRCUIT_BREAKER_ENABLED) {
+        // If we are already in HARD stop, no need to check value anymore.
+        if (!stopLossTriggered || stopLossType === "SOFT") {
+            const totalValue = await calculateTotalAssets(tokenId);
+            
+            if (blockNumber % 20 === 0) console.log(`[Monitor] Total Assets: $${totalValue.toFixed(2)} (Soft: $${CIRCUIT_BREAKER_SOFT_THRESHOLD} | Hard: $${CIRCUIT_BREAKER_HARD_THRESHOLD})`);
+
+            // --- Confirmation Logic (Filter Flash Wicks) ---
+            // 1. Track HARD Stop
+            if (totalValue < CIRCUIT_BREAKER_HARD_THRESHOLD) {
+                hardStopConfirmationCount++;
+            } else {
+                hardStopConfirmationCount = 0;
+            }
+
+            // 2. Track SOFT Stop (Always track if low, even if Hard is also tracking)
+            if (totalValue < CIRCUIT_BREAKER_SOFT_THRESHOLD) {
+                softStopConfirmationCount++;
+            } else {
+                softStopConfirmationCount = 0;
+            }
+
+            if (hardStopConfirmationCount > 0 || softStopConfirmationCount > 0) {
+                console.warn(`[CircuitBreaker] Danger Zone. HardCount: ${hardStopConfirmationCount}/3, SoftCount: ${softStopConfirmationCount}/3`);
+            }
+
+            // --- Trigger Execution (Require 3 consecutive checks ~9s) ---
+            if (hardStopConfirmationCount >= 3) {
+                await triggerCircuitBreaker(tokenId, totalValue, "HARD");
+                // Reset counters handled by state reload, but good to reset local vars
+                hardStopConfirmationCount = 0;
+                softStopConfirmationCount = 0;
+                return;
+            }
+
+            if (!stopLossTriggered && softStopConfirmationCount >= 3) {
+                await triggerCircuitBreaker(tokenId, totalValue, "SOFT");
+                return;
+            }
+        }
+    }
 
     // --- [Circuit Breaker] Stop Loss Check ---
     if (stopLossTriggered) {
-        if (blockNumber % 50 === 0) console.log(`[StopLoss] Bot is in STOP_LOSS mode. Monitoring for revival conditions...`);
+        if (blockNumber % 50 === 0) console.log(`[StopLoss] Bot is in ${stopLossType} STOP_LOSS mode. Monitoring for revival...`);
         
         // Revival Monitor: Check if price drops 10% below exit price (Good entry) or recovers
         if (circuitBreakerPrice) {
@@ -290,17 +337,6 @@ async function onNewBlock(blockNumber: number) {
             }
         }
         return; // Stop all other actions
-    }
-
-    // --- [Circuit Breaker] Monitor Total Value ---
-    if (CIRCUIT_BREAKER_ENABLED) {
-        const totalValue = await calculateTotalAssets(tokenId);
-        if (blockNumber % 20 === 0) console.log(`[Monitor] Total Assets: $${totalValue.toFixed(2)} (StopLoss: $${CIRCUIT_BREAKER_THRESHOLD})`);
-        
-        if (totalValue < CIRCUIT_BREAKER_THRESHOLD) {
-            await triggerCircuitBreaker(tokenId, totalValue);
-            return;
-        }
     }
 
     let forceRebalance = false;
@@ -547,50 +583,69 @@ async function calculateTotalAssets(tokenId: string): Promise<number> {
 }
 
 // --- Action: Trigger Circuit Breaker ---
-async function triggerCircuitBreaker(tokenId: string, currentVal: number) {
-    console.error(`\n[CircuitBreaker] TRIGGERED! Total Value ($${currentVal.toFixed(2)}) < Threshold ($${CIRCUIT_BREAKER_THRESHOLD})`);
+async function triggerCircuitBreaker(tokenId: string, currentVal: number, type: "SOFT" | "HARD") {
+    const threshold = type === "HARD" ? CIRCUIT_BREAKER_HARD_THRESHOLD : CIRCUIT_BREAKER_SOFT_THRESHOLD;
+    console.error(`\n[CircuitBreaker] ${type} STOP TRIGGERED! Total Value ($${currentVal.toFixed(2)}) < Threshold ($${threshold})`);
     
     // 1. Remove Liquidity
     if (tokenId && tokenId !== "0") {
-        console.log("[CircuitBreaker] Removing Liquidity...");
+        console.log(`[CircuitBreaker] Removing Liquidity (Type: ${type})...`);
         try {
             await atomicExitPosition(wallet, tokenId);
+            // [Safety] Mark position as closed immediately. 
+            // If swap fails later, we won't try to remove liquidity again (which would fail).
+            await saveState({ tokenId: "0" });
         } catch (e) {
             console.error("[CircuitBreaker] Failed to remove liquidity (continuing to swap):", e);
         }
     }
 
-    // 2. Swap WETH to USDC
-    try {
-        const balWETH = await getBalance(WETH_TOKEN, wallet);
-        const keepAmount = (balWETH * BigInt(Math.floor(STOP_LOSS_KEEP_WETH_PERCENT * 100))) / 100n;
-        const sellAmount = balWETH - keepAmount;
+    // 2. Swap WETH to USDC (ONLY FOR HARD STOP)
+    if (type === "HARD") {
+        try {
+            const balWETH = await getBalance(WETH_TOKEN, wallet);
+            const keepAmount = (balWETH * BigInt(Math.floor(STOP_LOSS_KEEP_WETH_PERCENT * 100))) / 100n;
+            const sellAmount = balWETH - keepAmount;
 
-        if (sellAmount > 100000000000000n) { // > 0.0001 ETH
-            console.log(`[CircuitBreaker] Selling ${ethers.formatEther(sellAmount)} WETH (Keeping ${ethers.formatEther(keepAmount)})...`);
-            const router = new ethers.Contract(SWAP_ROUTER_ADDR, SWAP_ROUTER_ABI, wallet);
-            await router.exactInputSingle({
-                tokenIn: WETH_TOKEN.address,
-                tokenOut: USDC_TOKEN.address,
-                fee: POOL_FEE,
-                recipient: wallet.address,
-                deadline: Math.floor(Date.now() / 1000) + 300,
-                amountIn: sellAmount,
-                amountOutMinimum: 0, 
-                sqrtPriceLimitX96: 0
-            }).then((tx: any) => tx.wait());
-            console.log("[CircuitBreaker] Swap Complete.");
+            if (sellAmount > 100000000000000n) { // > 0.0001 ETH
+                console.log(`[CircuitBreaker] HARD STOP: Selling ${ethers.formatEther(sellAmount)} WETH...`);
+                const router = new ethers.Contract(SWAP_ROUTER_ADDR, SWAP_ROUTER_ABI, wallet);
+                
+                // [Safety] Use withRetry to ensure transaction goes through even if RPC flakiness occurs
+                await withRetry(async () => {
+                    const tx = await router.exactInputSingle({
+                        tokenIn: WETH_TOKEN.address,
+                        tokenOut: USDC_TOKEN.address,
+                        fee: POOL_FEE,
+                        recipient: wallet.address,
+                        deadline: Math.floor(Date.now() / 1000) + 300,
+                        amountIn: sellAmount,
+                        amountOutMinimum: 0, // Accept 100% slippage to guarantee exit
+                        sqrtPriceLimitX96: 0
+                    });
+                    return tx.wait();
+                });
+                console.log("[CircuitBreaker] Panic Swap Complete.");
+            }
+        } catch (e) {
+            console.error("[CircuitBreaker] Swap failed:", e);
+            // [Critical] If swap fails, RETURN immediately. 
+            // Do NOT save 'stopLossTriggered: true'. 
+            // This ensures the bot will retry the swap in the next block.
+            return;
         }
-    } catch (e) {
-        console.error("[CircuitBreaker] Swap failed:", e);
+    } else {
+        console.log(`[CircuitBreaker] SOFT STOP: Holding WETH. No swap executed.`);
     }
 
     // 3. Update State & Alert
     const exitPrice = await getPrice();
-    saveState({ stopLossTriggered: true, tokenId: "0", circuitBreakerPrice: exitPrice });
+    saveState({ stopLossTriggered: true, stopLossType: type, tokenId: "0", circuitBreakerPrice: exitPrice });
     
-    await sendEmailAlert("CIRCUIT BREAKER TRIGGERED", 
-        `Bot stopped.\nValue: $${currentVal.toFixed(2)}\nAction: Liquidity Removed, WETH Sold.\nExit Price: $${exitPrice}\n\nTo Restart: Set 'stopLossTriggered' to false in state.`);
+    const actionMsg = type === "HARD" ? "Liquidity Removed, WETH Sold (Cash Out)." : "Liquidity Removed, Holding WETH (Wait for bounce).";
+    
+    await sendEmailAlert(`🚨 ${type} STOP TRIGGERED`, 
+        `Bot stopped.\nValue: $${currentVal.toFixed(2)}\nAction: ${actionMsg}\nExit Price: $${exitPrice}\n\nTo Restart: Set 'stopLossTriggered' to false in state.`);
 }
 
 initialize().catch(async (e) => {
