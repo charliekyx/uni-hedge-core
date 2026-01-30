@@ -100,7 +100,7 @@ async function main() {
     console.log(`   当前 USDC 余额: ${ethers.formatUnits(usdcBalanceBefore, 6)} USDC`);
 
     if (wethBalance > 0n) {
-        const sellPercent = 75n;
+        const sellPercent = 100n;
         const sellAmount = (wethBalance * sellPercent) / 100n;
         console.log(`\n正在将 ${ethers.formatEther(sellAmount)} WETH (${sellPercent}%) 兑换为 USDC...`);
 

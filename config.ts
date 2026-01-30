@@ -65,7 +65,7 @@ export const CIRCUIT_BREAKER_ENABLED = true;
 export const CIRCUIT_BREAKER_SOFT_THRESHOLD = 3800;
 export const CIRCUIT_BREAKER_HARD_THRESHOLD = 3950; // [Strategy Update] Tighten Stop & One-Step Exit
 
-export const STOP_LOSS_KEEP_WETH_PERCENT = 0.25; // 0.25 = 25% (Only applies to Hard Stop)
+export const STOP_LOSS_KEEP_WETH_PERCENT = 0; // 0.25 = 25% (Only applies to Hard Stop)
 
 // --- ABIs ---
 export const ERC20_ABI = [
