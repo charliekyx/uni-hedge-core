@@ -71,7 +71,8 @@ export async function approveAll(wallet: ethers.Wallet) {
 // --- Core Actions ---
 export async function atomicExitPosition(
     wallet: ethers.Wallet,
-    tokenId: string
+    tokenId: string,
+    overrides: any = {}
 ) {
     console.log(`\n[Exit] Executing Atomic Exit for Token ${tokenId}...`);
     const npm = new ethers.Contract(
@@ -123,7 +124,7 @@ export async function atomicExitPosition(
     calls.push(iface.encodeFunctionData("burn", [tokenId]));
 
     try {
-        const tx = await npm.multicall(calls, { value: 0 });
+        const tx = await npm.multicall(calls, { value: 0, ...overrides });
         await waitWithTimeout(tx, TX_TIMEOUT_MS);
         console.log(`   Atomic Exit Successful! (Tx: ${tx.hash})`);
     } catch (e) {
