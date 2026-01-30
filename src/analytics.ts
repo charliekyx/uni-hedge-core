@@ -42,6 +42,7 @@ async function fetchCandles(symbol: string, interval: string, limit: number): Pr
             let granularity = 3600; // Default 1h
             if (interval === '15m') granularity = 900;
             if (interval === '5m') granularity = 300;
+            if (interval === '4h') granularity = 14400; // [Added] Support 4h
             if (interval === '1d') granularity = 86400;
 
             // Note: Coinbase uses ETH-USD. We ignore the 'symbol' param (ETHUSDT) for fallback.

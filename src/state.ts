@@ -13,6 +13,8 @@ export interface BotState {
     tokenId: string; // tokenid from my last postion mint
     lastCheck: number;
     lastKnownUSDCBalance: string; // To track deposits
+    stopLossTriggered?: boolean;
+    circuitBreakerPrice?: number;
 }
 
 export function loadState(): BotState {

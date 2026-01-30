@@ -57,6 +57,11 @@ export const PULLBACK_THRESHOLD = 0.10;
 export const AAVE_TARGET_HEALTH_FACTOR = 1.7; // Target safety buffer
 export const AAVE_MIN_HEALTH_FACTOR = 1.5;    // Critical warning level
 
+// --- Circuit Breaker (Stop Loss) ---
+export const CIRCUIT_BREAKER_ENABLED = true;
+export const CIRCUIT_BREAKER_THRESHOLD = 3500; // USDC (Total Value Threshold)
+export const STOP_LOSS_KEEP_WETH_PERCENT = 0; // Keep 0% WETH when clearing (Sell all)
+
 // --- ABIs ---
 export const ERC20_ABI = [
     "function balanceOf(address owner) view returns (uint256)",

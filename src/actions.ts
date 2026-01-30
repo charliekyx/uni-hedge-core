@@ -395,13 +395,14 @@ export async function executeFullRebalance(
 
     
     console.log("   [Strategy] Pre-fetching market analytics...");
-    let atr, rsi;
+    let atr, rsi4h, rsi15m;
     try {
-        [atr, rsi] = await Promise.all([
+        [atr, rsi4h, rsi15m] = await Promise.all([
             getEthAtr("1h"),
-            getEthRsi("1h")
+            getEthRsi("4h"), // Trend Context
+            getEthRsi("15m") // Immediate Momentum
         ]);
-        console.log(`   [Strategy] Data acquired. ATR: ${atr}, RSI: ${rsi}`);
+        console.log(`   [Strategy] Data acquired. ATR: ${atr}, RSI(4h): ${rsi4h}, RSI(15m): ${rsi15m}`);
     } catch (e) {
         console.error("   [Strategy] Failed to fetch market data. Aborting rebalance to keep old position safe.");
         throw e; // keep old position
@@ -473,14 +474,27 @@ export async function executeFullRebalance(
 
     let skew = 0.5;
 
-    if (rsi > 75) {
-        skew = 0.3;
-        console.log(`   [Strategy] RSI High -> Skewing Range DOWN (Bearish Setup)`);
-    } else if (rsi < 25) {
-        skew = 0.7;
-        console.log(`   [Strategy] RSI Low -> Skewing Range UP (Bullish Setup)`);
+    // [Strategy Update] Multi-Timeframe Skew Logic
+    // 1. Base Skew on Macro Trend (4h)
+    // Trend Following: If trend is UP, we want more range ABOVE current price to capture gains.
+    if (rsi4h > 60) {
+        skew = 0.6; // Bullish Trend -> Shift range UP
+        console.log(`   [Strategy] Trend is Bullish (RSI 4h: ${rsi4h}). Skewing UP.`);
+    } else if (rsi4h < 40) {
+        skew = 0.4; // Bearish Trend -> Shift range DOWN
+        console.log(`   [Strategy] Trend is Bearish (RSI 4h: ${rsi4h}). Skewing DOWN.`);
     } else {
-        console.log(`   [Strategy] RSI Neutral -> Symmetric Range`);
+        console.log(`   [Strategy] Trend is Neutral (RSI 4h: ${rsi4h}). Keeping Symmetric.`);
+    }
+
+    // 2. Safety Check with Short-term Momentum (15m)
+    // If we are Bullish but 15m is Overbought, dampen the skew (don't chase the top)
+    if (skew > 0.5 && rsi15m > 70) {
+        skew = 0.55; 
+        console.log(`   [Strategy] Short-term Overbought (RSI 15m: ${rsi15m}). Dampening Bullish Skew.`);
+    } else if (skew < 0.5 && rsi15m < 30) {
+        skew = 0.45;
+        console.log(`   [Strategy] Short-term Oversold (RSI 15m: ${rsi15m}). Dampening Bearish Skew.`);
     }
 
     const totalSpan = WIDTH * 2;

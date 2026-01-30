@@ -17,6 +17,12 @@ import {
     AUTO_INVEST_THRESHOLD_USDC,
     PULLBACK_THRESHOLD, // &lt;-- Imported from config
     ERC20_ABI,
+    CIRCUIT_BREAKER_ENABLED,
+    CIRCUIT_BREAKER_THRESHOLD,
+    STOP_LOSS_KEEP_WETH_PERCENT,
+    SWAP_ROUTER_ADDR,
+    SWAP_ROUTER_ABI,
+    MAX_UINT128,
 } from "./config";
 
 import { loadState, scanLocalOrphans, saveState } from "./src/state"; // [Added] scanLocalOrphans
@@ -24,6 +30,7 @@ import { approveAll, executeFullRebalance, getBalance, atomicExitPosition } from
 import { AaveManager } from "./src/hedge";
 import { RobustProvider } from "./src/connection";
 import { sendEmailAlert } from "./src/utils";
+import { getEthRsi } from "./src/analytics";
 
 dotenv.config();
 
@@ -49,6 +56,9 @@ let profitSecuredPrice = 0;  // Record the price at profit taking
 // Last run timestamp for block listener throttling
 let lastRunTime = 0;
 const MIN_INTERVAL_MS = 3000; // 3s
+
+// [Circuit Breaker]
+let lastAlertTime = 0;
 
 async function initialize() {
     const rpcEnv = process.env.RPC_URL || "";
@@ -225,7 +235,10 @@ async function setupEventListeners() {
                         "0", // Liquidity doesn't matter for price
                         Number(slot0.tick)
                     );
-                    const priceStr = (WETH_TOKEN.address.toLowerCase() < USDC_TOKEN.address.toLowerCase()) ? configuredPool.token1Price.toSignificant(6) : configuredPool.token0Price.toSignificant(6);
+                    // [Fix] Dynamically determine which token is WETH to get the correct price (USDC per WETH)
+                    const priceStr = (configuredPool.token0.address.toLowerCase() === WETH_TOKEN.address.toLowerCase()) 
+                        ? configuredPool.token0Price.toSignificant(6) 
+                        : configuredPool.token1Price.toSignificant(6);
                     profitSecuredPrice = parseFloat(priceStr);
                     console.log(`[Standby] Profit secured at price: ${profitSecuredPrice}`);
                 } catch (priceError) {
@@ -245,7 +258,51 @@ async function setupEventListeners() {
 }
 
 async function onNewBlock(blockNumber: number) {
-    let { tokenId, lastKnownUSDCBalance } = await loadState();
+    let { tokenId, lastKnownUSDCBalance, stopLossTriggered, circuitBreakerPrice } = await loadState() as any;
+
+    // --- [Circuit Breaker] Stop Loss Check ---
+    if (stopLossTriggered) {
+        if (blockNumber % 50 === 0) console.log(`[StopLoss] Bot is in STOP_LOSS mode. Monitoring for revival conditions...`);
+        
+        // Revival Monitor: Check if price drops 10% below exit price (Good entry) or recovers
+        if (circuitBreakerPrice) {
+            const currentPrice = await getPrice();
+            const targetEntry = circuitBreakerPrice * 0.90; // 10% drop
+            
+            // [Strategy] Multi-Timeframe RSI Check
+            // 1h is too slow for flash crashes. We use 15m for speed and 4h for trend context.
+            let rsi15m = 50;
+            let rsi4h = 50;
+            try {
+                [rsi15m, rsi4h] = await Promise.all([
+                    getEthRsi("15m"),
+                    getEthRsi("4h")
+                ]);
+            } catch (e) {
+                console.warn("[StopLoss] Failed to fetch RSI data.");
+            }
+
+            // Condition: Price is cheap (< Target) AND Short-term Panic (RSI 15m < 30)
+            if (currentPrice < targetEntry && rsi15m < 30 && (Date.now() - lastAlertTime > 3600 * 1000)) {
+                console.log(`[StopLoss] Opportunity detected! Price ${currentPrice} < Target ${targetEntry} | RSI 15m: ${rsi15m} | RSI 4h: ${rsi4h}`);
+                await sendEmailAlert("Bot Revival Opportunity", `Price dropped 10% below exit & RSI Oversold.\nCurrent: ${currentPrice}\nTarget: ${targetEntry}\nRSI (15m): ${rsi15m} (Panic)\nRSI (4h): ${rsi4h} (Trend)\n\nUpdate 'stopLossTriggered' to false in state to restart.`);
+                lastAlertTime = Date.now();
+            }
+        }
+        return; // Stop all other actions
+    }
+
+    // --- [Circuit Breaker] Monitor Total Value ---
+    if (CIRCUIT_BREAKER_ENABLED) {
+        const totalValue = await calculateTotalAssets(tokenId);
+        if (blockNumber % 20 === 0) console.log(`[Monitor] Total Assets: $${totalValue.toFixed(2)} (StopLoss: $${CIRCUIT_BREAKER_THRESHOLD})`);
+        
+        if (totalValue < CIRCUIT_BREAKER_THRESHOLD) {
+            await triggerCircuitBreaker(tokenId, totalValue);
+            return;
+        }
+    }
+
     let forceRebalance = false;
 
     // --- [Auto-Resume] Standby Check ---
@@ -260,7 +317,10 @@ async function onNewBlock(blockNumber: number) {
                 "0", // Liquidity doesn't matter for price
                 Number(slot0.tick)
             );
-            const priceStr = (WETH_TOKEN.address.toLowerCase() < USDC_TOKEN.address.toLowerCase()) ? configuredPool.token1Price.toSignificant(6) : configuredPool.token0Price.toSignificant(6);
+            // [Fix] Dynamically determine which token is WETH
+            const priceStr = (configuredPool.token0.address.toLowerCase() === WETH_TOKEN.address.toLowerCase()) 
+                ? configuredPool.token0Price.toSignificant(6) 
+                : configuredPool.token1Price.toSignificant(6);
             const currentPrice = parseFloat(priceStr);
             
             const reentryPrice = profitSecuredPrice * (1 - PULLBACK_THRESHOLD);
@@ -407,6 +467,131 @@ async function executeFullRebalanceWrapper(blockNumber: number, tokenId: string,
     }
 }
 
+// --- Helper: Get Current Price (WETH in USDC) ---
+async function getPrice(): Promise<number> {
+    const slot0 = await poolContract.slot0();
+    const configuredPool = new Pool(
+        USDC_TOKEN,
+        WETH_TOKEN,
+        POOL_FEE,
+        slot0.sqrtPriceX96.toString(),
+        "0",
+        Number(slot0.tick)
+    );
+    // [Fix] Dynamic check: If WETH is token0, use token0Price (USDC/WETH). If WETH is token1, use token1Price.
+    const price = (configuredPool.token0.address.toLowerCase() === WETH_TOKEN.address.toLowerCase())
+        ? configuredPool.token0Price
+        : configuredPool.token1Price;
+    return parseFloat(price.toSignificant(6));
+}
+
+// --- Helper: Calculate Total Asset Value in USDC ---
+async function calculateTotalAssets(tokenId: string): Promise<number> {
+    // 1. Wallet Balances
+    const balUSDC = await getBalance(USDC_TOKEN, wallet);
+    const balWETH = await getBalance(WETH_TOKEN, wallet);
+    
+    const price = await getPrice();
+    
+    let totalValue = Number(ethers.formatUnits(balUSDC, 6)) + (Number(ethers.formatEther(balWETH)) * price);
+
+    // 2. LP Position Value
+    if (tokenId && tokenId !== "0") {
+        try {
+            const pos = await npm.positions(tokenId);
+            if (pos.liquidity > 0n) {
+                const slot0 = await poolContract.slot0();
+                const configuredPool = new Pool(USDC_TOKEN, WETH_TOKEN, POOL_FEE, slot0.sqrtPriceX96.toString(), "0", Number(slot0.tick));
+                
+                const positionSDK = new Position({
+                    pool: configuredPool,
+                    liquidity: pos.liquidity.toString(),
+                    tickLower: Number(pos.tickLower),
+                    tickUpper: Number(pos.tickUpper),
+                });
+
+                const amount0 = parseFloat(positionSDK.amount0.toSignificant(6)); // WETH
+                const amount1 = parseFloat(positionSDK.amount1.toSignificant(6)); // USDC
+                
+                totalValue += amount1 + (amount0 * price);
+
+                // [Added] Include Unclaimed Fees via Static Call
+                try {
+                    const collectParams = {
+                        tokenId: tokenId,
+                        recipient: wallet.address,
+                        amount0Max: MAX_UINT128,
+                        amount1Max: MAX_UINT128,
+                    };
+                    // Simulate collection to get pending fees without executing tx
+                    const [fee0, fee1] = await npm.getFunction("collect").staticCall(collectParams);
+                    
+                    let feeVal = 0;
+                    if (configuredPool.token0.address.toLowerCase() === WETH_TOKEN.address.toLowerCase()) {
+                        // token0 is WETH, token1 is USDC
+                        feeVal = parseFloat(ethers.formatUnits(fee1, 6)) + (parseFloat(ethers.formatUnits(fee0, 18)) * price);
+                    } else {
+                        // token0 is USDC, token1 is WETH
+                        feeVal = parseFloat(ethers.formatUnits(fee0, 6)) + (parseFloat(ethers.formatUnits(fee1, 18)) * price);
+                    }
+                    totalValue += feeVal;
+                } catch (e) {
+                    console.warn("[Monitor] Failed to fetch pending fees (ignoring):", e);
+                }
+            }
+        } catch (e) {
+            console.error("[Monitor] Failed to calc LP value:", e);
+        }
+    }
+    return totalValue;
+}
+
+// --- Action: Trigger Circuit Breaker ---
+async function triggerCircuitBreaker(tokenId: string, currentVal: number) {
+    console.error(`\n[CircuitBreaker] TRIGGERED! Total Value ($${currentVal.toFixed(2)}) < Threshold ($${CIRCUIT_BREAKER_THRESHOLD})`);
+    
+    // 1. Remove Liquidity
+    if (tokenId && tokenId !== "0") {
+        console.log("[CircuitBreaker] Removing Liquidity...");
+        try {
+            await atomicExitPosition(wallet, tokenId);
+        } catch (e) {
+            console.error("[CircuitBreaker] Failed to remove liquidity (continuing to swap):", e);
+        }
+    }
+
+    // 2. Swap WETH to USDC
+    try {
+        const balWETH = await getBalance(WETH_TOKEN, wallet);
+        const keepAmount = (balWETH * BigInt(Math.floor(STOP_LOSS_KEEP_WETH_PERCENT * 100))) / 100n;
+        const sellAmount = balWETH - keepAmount;
+
+        if (sellAmount > 100000000000000n) { // > 0.0001 ETH
+            console.log(`[CircuitBreaker] Selling ${ethers.formatEther(sellAmount)} WETH (Keeping ${ethers.formatEther(keepAmount)})...`);
+            const router = new ethers.Contract(SWAP_ROUTER_ADDR, SWAP_ROUTER_ABI, wallet);
+            await router.exactInputSingle({
+                tokenIn: WETH_TOKEN.address,
+                tokenOut: USDC_TOKEN.address,
+                fee: POOL_FEE,
+                recipient: wallet.address,
+                deadline: Math.floor(Date.now() / 1000) + 300,
+                amountIn: sellAmount,
+                amountOutMinimum: 0, 
+                sqrtPriceLimitX96: 0
+            }).then((tx: any) => tx.wait());
+            console.log("[CircuitBreaker] Swap Complete.");
+        }
+    } catch (e) {
+        console.error("[CircuitBreaker] Swap failed:", e);
+    }
+
+    // 3. Update State & Alert
+    const exitPrice = await getPrice();
+    saveState({ stopLossTriggered: true, tokenId: "0", circuitBreakerPrice: exitPrice });
+    
+    await sendEmailAlert("CIRCUIT BREAKER TRIGGERED", 
+        `Bot stopped.\nValue: $${currentVal.toFixed(2)}\nAction: Liquidity Removed, WETH Sold.\nExit Price: $${exitPrice}\n\nTo Restart: Set 'stopLossTriggered' to false in state.`);
+}
 
 initialize().catch(async (e) => {
     console.error(e);
