@@ -7,12 +7,12 @@ import { Writable } from "stream";
 import {
     NPM_ABI,
     NONFUNGIBLE_POSITION_MANAGER_ADDR,
-} from "../config";
+} from "./config";
 
-import { loadState, saveState } from "./state";
-import { atomicExitPosition } from "./actions";
-import { AaveManager } from "./hedge";
-import { RobustProvider } from "./connection";
+import { loadState, saveState } from "./src/state";
+import { atomicExitPosition } from "./src/actions";
+import { AaveManager } from "./src/hedge";
+import { RobustProvider } from "./src/connection";
 
 dotenv.config();
 
